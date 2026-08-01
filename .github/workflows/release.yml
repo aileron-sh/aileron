@@ -1,0 +1,69 @@
+name: Release to PyPI
+
+# Publishes on a published GitHub Release, using PyPI Trusted Publishing (OIDC).
+# No API tokens are stored anywhere: PyPI verifies the workflow identity directly.
+# Setup required once, before the first release:
+#   1. PyPI -> Your projects -> Publishing -> Add a pending publisher:
+#        PyPI project name: aileron
+#        Owner:             Aileron-sh
+#        Repository name:   aileron
+#        Workflow name:     release.yml
+#        Environment name:  pypi
+#   2. This repo -> Settings -> Environments -> New environment -> "pypi"
+#      (optionally require a reviewer, so a release cannot publish unattended)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest tests/ -q
+
+  build:
+    name: Build distributions
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build twine
+      - run: python -m build
+      - name: Validate metadata
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/aileron
+    permissions:
+      id-token: write # required for Trusted Publishing + provenance attestations
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
