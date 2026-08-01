@@ -196,8 +196,8 @@ trusted third party.
 ## Roadmap
 
 - **`aileron-rules` community rule repo** — Sigma-for-agents: community
-  detection rules mapped to the OWASP Agentic AI Top 10, CI-validated
-  against recorded incident traces.
+  detection rules mapped to the OWASP Agentic Security Initiative's threat
+  taxonomy, CI-validated against recorded incident traces.
 - **Sigstore/Rekor checkpoint anchoring** — publish signed checkpoints to a
   public transparency log for non-repudiable, third-party-verifiable
   timestamps.
