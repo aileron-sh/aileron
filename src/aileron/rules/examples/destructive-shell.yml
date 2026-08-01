@@ -1,0 +1,16 @@
+id: aileron-001
+title: Block destructive shell commands
+severity: high
+match:
+  type: tool_call
+  tool.name: shell
+  tool.arguments_contains:
+    - "rm -rf"
+    - "rm -fr"
+    - "DROP TABLE"
+    - ":(){ :|:& };:"
+    - "mkfs"
+    - "dd if=/dev/zero"
+    - "shutdown -h"
+    - "> /dev/sda"
+action: block

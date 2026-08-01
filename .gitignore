@@ -1,0 +1,49 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+*.whl
+*.tar.gz
+# Release archives belong in dist/, never committed to the tree.
+/aileron-*.zip
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- Aileron artifacts ---
+# Chain logs are evidence journals: they can contain recorded tool-call
+# digests (and content, if capture_content was on). Never commit them.
+*.chain.jsonl
+*.chain.jsonl.checkpoints.jsonl
+demo-report.html
+
+# Signing keys. Public keys (*.pub) may be committed if you want them in
+# the repo for verification; private keys must never be.
+*.key
