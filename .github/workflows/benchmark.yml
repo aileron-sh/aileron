@@ -1,20 +1,40 @@
 name: Benchmark
 
 # Guards against silent performance decay in the proxy, which sits inline on
-# every tool call. Deliberately tolerant: GitHub runners are shared and noisy,
-# so this fails only on a large (>2x median) regression, not on variance.
+# every tool call.
+#
+# Two deliberate design choices:
+#
+#  1. It only runs when code that can affect latency changes. A detection-rule
+#     or docs PR never triggers it — the contribution path we most want to keep
+#     frictionless should not be gated on a latency measurement.
+#  2. When it does run, it can fail. An advisory-only check is one nobody reads.
+#     The 2x threshold is far above real variance (3-13%), and a trip is
+#     re-measured once before failing, so a throttled runner cannot block a PR.
+#
+# If a change makes the proxy legitimately slower (e.g. a security fix that
+# costs latency), re-record the baseline and commit it rather than loosening
+# the threshold:
+#     python scripts/benchmark.py --json scripts/benchmark_baseline.json
 
 on:
   push:
     branches: [main]
+    paths:
+      - "src/aileron/**"
+      - "scripts/benchmark.py"
+      - "scripts/benchmark_baseline.json"
+      - "pyproject.toml"
+      - ".github/workflows/benchmark.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "src/aileron/**"
+      - "scripts/benchmark.py"
+      - "scripts/benchmark_baseline.json"
+      - "pyproject.toml"
+      - ".github/workflows/benchmark.yml"
   workflow_dispatch:
-    inputs:
-      record_baseline:
-        description: "Print results to record as the new baseline"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -33,21 +53,44 @@ jobs:
 
       - name: Measure proxy overhead
         run: |
-          set -o pipefail
-          if [ -f scripts/benchmark_baseline.json ]; then
+          set -u
+
+          if [ ! -f scripts/benchmark_baseline.json ]; then
+            echo "No baseline committed yet — recording only, nothing to compare."
+            python scripts/benchmark.py --calls 2000 --json benchmark-results.json \
+              | tee benchmark-output.txt
+            exit 0
+          fi
+
+          measure() {
             python scripts/benchmark.py \
               --calls 2000 \
               --json benchmark-results.json \
               --baseline scripts/benchmark_baseline.json \
               --max-regression 2.0 \
-              | tee benchmark-output.txt
-          else
-            echo "No baseline committed yet — recording only, nothing to compare."
-            python scripts/benchmark.py \
-              --calls 2000 \
-              --json benchmark-results.json \
-              | tee benchmark-output.txt
+              > benchmark-output.txt 2>&1
+          }
+
+          if measure; then
+            cat benchmark-output.txt
+            exit 0
           fi
+
+          # A shared runner can be throttled badly enough to look like a
+          # regression. Measure again before blocking anyone.
+          cat benchmark-output.txt
+          mv benchmark-output.txt benchmark-attempt-1.txt
+          echo "::warning::Overhead check tripped; re-measuring once to rule out runner noise."
+
+          if measure; then
+            cat benchmark-output.txt
+            echo "::notice::Second measurement passed — first trip attributed to runner noise."
+            exit 0
+          fi
+
+          cat benchmark-output.txt
+          echo "::error::Median proxy overhead regressed more than 2x on two consecutive runs."
+          exit 1
 
       - name: Summary
         if: always()
@@ -55,8 +98,16 @@ jobs:
           {
             echo '## Proxy overhead (Linux x86_64)'
             echo '```'
-            cat benchmark-output.txt
+            cat benchmark-output.txt 2>/dev/null || echo "(no output)"
             echo '```'
+            if [ -f benchmark-attempt-1.txt ]; then
+              echo '<details><summary>First measurement (tripped, re-run)</summary>'
+              echo ''
+              echo '```'
+              cat benchmark-attempt-1.txt
+              echo '```'
+              echo '</details>'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
@@ -66,3 +117,5 @@ jobs:
           path: |
             benchmark-results.json
             benchmark-output.txt
+            benchmark-attempt-1.txt
+          if-no-files-found: warn
