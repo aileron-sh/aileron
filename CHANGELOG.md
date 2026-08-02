@@ -181,5 +181,3 @@ Initial public release.
   `demo`.
 - **Privacy posture**: no telemetry anywhere; tool arguments/results stored
   as digests unless content capture is explicitly enabled.
-
-<!-- path-filter verification: docs-only change -->
