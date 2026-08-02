@@ -165,3 +165,43 @@ def test_partial_trailing_line_does_not_brick_the_log(tmp_path):
     e = reopened.append(make_ev(3))
     assert e["seq"] == 3
     assert e["prev_hash"] == ChainLog.read(str(path))[1]["hash"]
+
+
+def test_duplicate_keys_and_non_canonical_numbers_are_detected(tmp_path):
+    """The on-disk bytes are authoritative, not just what json.loads returns."""
+    path = tmp_path / "c.jsonl"
+    log = ChainLog(str(path))
+    log.append(make_ev(1))
+    line = path.read_text(encoding="utf-8").strip()
+
+    # Duplicate key: json.loads keeps the last, so the parsed object could
+    # still hash correctly while the file carries extra content.
+    path.write_text(line[:-1] + ',"meta":{"INJECTED":"x"}}\n', encoding="utf-8")
+    assert verify(str(path)).ok is False
+
+    # Equivalent-but-different numeric literal.
+    log2 = ChainLog(str(tmp_path / "d.jsonl"))
+    log2.append(make_ev(2))
+    p2 = tmp_path / "d.jsonl"
+    l2 = p2.read_text(encoding="utf-8").strip()
+    if '"seq":1' in l2:
+        p2.write_text(l2.replace('"seq":1', '"seq":1e0') + "\n", encoding="utf-8")
+        assert verify(str(p2)).ok is False
+
+
+def test_broken_line_does_not_let_forged_events_verify(tmp_path):
+    """After a corrupt line, later events must not re-chain from genesis."""
+    path = tmp_path / "c.jsonl"
+    log = ChainLog(str(path))
+    log.append(make_ev(1))
+    log.append(make_ev(2))
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[1] = "{not json"
+    # A forged event that legitimately chains from genesis.
+    forged_path = tmp_path / "f.jsonl"
+    ChainLog(str(forged_path)).append(make_ev(3))
+    lines.append(forged_path.read_text(encoding="utf-8").strip())
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    result = verify(str(path))
+    assert result.ok is False
+    assert any("chain broken" in e for e in result.errors)

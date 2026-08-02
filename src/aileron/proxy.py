@@ -20,6 +20,22 @@ from typing import Any, BinaryIO
 from aileron import events
 from aileron.policy import decide
 
+# Refuse absurd frames rather than allocating for them: the proxy is the
+# enforcement point, so exhausting it is a way to stop mediation.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+
+# Sentinel: the message could not be parsed, so it must not be forwarded.
+_UNPARSEABLE = object()
+
+
+def _respond(client_out: BinaryIO, wire: bytes, obj: dict) -> None:
+    """Send a locally generated JSON-RPC reply, framed like the request."""
+    try:
+        client_out.write(_frame(json.dumps(obj).encode(), wire))
+        client_out.flush()
+    except (BrokenPipeError, OSError):
+        pass
+
 
 def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
     """Read one JSON-RPC message from stream.
@@ -67,9 +83,13 @@ def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
             length = int(raw)
     if length is None:
         raise ValueError("framed message missing Content-Length header")
+    if length > MAX_MESSAGE_BYTES:
+        raise ValueError(f"Content-Length too large: {length}")
     body = bytearray()
     while len(body) < length:
-        chunk = stream.read(length - len(body))
+        # Read in bounded chunks so a large declared length cannot be
+        # pre-allocated in one shot.
+        chunk = stream.read(min(65536, length - len(body)))
         if not chunk:
             return None
         body += chunk
@@ -99,6 +119,9 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
     framework = "mcp"
     lock = threading.Lock()
     pending: dict[Any, dict[str, Any]] = {}
+    # Set when recording breaks: a flight recorder that cannot record must
+    # stop mediating rather than let calls through unlogged.
+    record_failed = threading.Event()
 
     def append(ev: dict) -> None:
         with lock:
@@ -116,11 +139,14 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 payload, wire = got
                 try:
                     msg = json.loads(payload)
-                except ValueError:
+                except Exception:
                     msg = None
+                # A response id must be usable as a dict key; an untrusted
+                # child could send a list/dict here and take the thread down.
                 if (
                     isinstance(msg, dict)
-                    and msg.get("id") is not None
+                    and isinstance(msg.get("id"), (str, int, float))
+                    and not isinstance(msg.get("id"), bool)
                     and ("result" in msg or "error" in msg)
                 ):
                     with lock:
@@ -152,12 +178,24 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                             ev["result_digest"] = events.digest(result)
                             if getattr(log, "capture_content", False):
                                 ev["result"] = result
-                        append(ev)
+                        try:
+                            append(ev)
+                        except Exception as exc:
+                            # A journal write that fails must not silently kill
+                            # this thread and leave the child executing calls
+                            # unrecorded. Surface it and stop mediating.
+                            print(f"aileron: journal write failed: {exc}",
+                                  file=sys.stderr, flush=True)
+                            record_failed.set()
+                            break
                 try:
                     client_out.write(wire)
                     client_out.flush()
                 except (BrokenPipeError, OSError):
                     break
+        except Exception as exc:  # never die silently: this thread records evidence
+            print(f"aileron: reader thread aborted: {exc}", file=sys.stderr, flush=True)
+            record_failed.set()
         finally:
             try:
                 client_out.flush()
@@ -168,6 +206,8 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
     reader.start()
     try:
         while True:
+            if record_failed.is_set():
+                break  # recording is broken; stop forwarding tool calls
             try:
                 got = _read_message(client_in)
             except (ValueError, OSError):
@@ -177,14 +217,30 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
             payload, wire = got
             try:
                 msg = json.loads(payload)
-            except ValueError:
-                msg = None
-            if (
-                isinstance(msg, dict)
-                and msg.get("method") == "tools/call"
-                and "id" in msg
-            ):
-                params = msg.get("params") or {}
+            except Exception:
+                # Fail closed. If we cannot parse it we cannot police it, and
+                # the child's parser may well accept what ours rejected — that
+                # difference alone would be a policy bypass. Never forward.
+                msg = _UNPARSEABLE
+            if msg is _UNPARSEABLE:
+                _respond(
+                    client_out, wire,
+                    {"jsonrpc": "2.0", "id": None,
+                     "error": {"code": -32700, "message": "parse error (rejected by aileron)"}},
+                )
+                continue
+
+            # A message may carry one call (dict) or several (JSON-RPC batch
+            # array). Police every tools/call in it, whether or not it has an
+            # id: the child dispatches on `method`, so an id-less call executes
+            # just the same.
+            calls = [m for m in (msg if isinstance(msg, list) else [msg])
+                     if isinstance(m, dict) and m.get("method") == "tools/call"]
+
+            blocked_rule: str | None = None
+            staged: list[tuple[Any, dict]] = []
+            for call in calls:
+                params = call.get("params") or {}
                 arguments = params.get("arguments")
                 # Arguments are always attached in memory so policy rules can
                 # match on content; ChainLog.append strips them at persist
@@ -204,33 +260,50 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 if rules:
                     decision = decide(ev, rules)
                     if decision.action == "block":
-                        rule_id = decision.rule_ids[0]
+                        blocked_rule = decision.rule_ids[0]
                         ev["status"] = "blocked"
-                        ev["policy"] = {"rule_id": rule_id, "action": "block"}
+                        ev["policy"] = {"rule_id": blocked_rule, "action": "block"}
                         append(ev)
-                        err = json.dumps(
-                            {
-                                "jsonrpc": "2.0",
-                                "id": msg["id"],
-                                "error": {
-                                    "code": -32000,
-                                    "message": f"blocked by aileron rule {rule_id}",
-                                },
-                            }
-                        ).encode()
-                        try:
-                            client_out.write(_frame(err, wire))
-                            client_out.flush()
-                        except (BrokenPipeError, OSError):
-                            break
-                        continue  # child NOT invoked
+                        break  # whole message is refused; see below
                     if decision.rule_ids:
                         ev["policy"] = {
                             "rule_id": decision.rule_ids[0],
                             "action": decision.action,
                         }
+                staged.append((call.get("id"), ev))
+
+            if blocked_rule is not None:
+                # Refuse the entire message rather than trying to forward a
+                # partial batch: the child must not see any of it.
+                reply_id = calls[0].get("id") if calls else None
+                _respond(
+                    client_out, wire,
+                    {"jsonrpc": "2.0", "id": reply_id,
+                     "error": {"code": -32000,
+                               "message": f"blocked by aileron rule {blocked_rule}"}},
+                )
+                continue  # child NOT invoked
+
+            for call_id, ev in staged:
+                if call_id is None:
+                    # No id means no response will come back to complete this
+                    # event, so journal it now rather than losing it.
+                    ev["meta"] = {**ev.get("meta", {}), "notification": True}
+                    append(ev)
+                    continue
                 with lock:
-                    pending[msg["id"]] = {"event": ev, "started": time.perf_counter()}
+                    prior = pending.get(call_id)
+                    if prior is not None:
+                        # A reused in-flight id would silently displace the
+                        # earlier record; journal it before it is overwritten.
+                        displaced = prior["event"]
+                        displaced["status"] = "error"
+                        displaced["meta"] = {
+                            **displaced.get("meta", {}),
+                            "error": "superseded by duplicate JSON-RPC id",
+                        }
+                        log.append(displaced)
+                    pending[call_id] = {"event": ev, "started": time.perf_counter()}
             try:
                 child.stdin.write(wire)
                 child.stdin.flush()

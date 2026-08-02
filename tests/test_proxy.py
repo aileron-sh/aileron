@@ -313,3 +313,67 @@ def test_read_message_rejects_duplicate_content_length():
     good = b"Content-Length: %d\r\n\r\n%s" % (len(payload), payload)
     body, _wire = _read_message(_io.BytesIO(good))
     assert json.loads(body) == {"jsonrpc": "2.0"}
+
+
+def _blocking_rule():
+    return [Rule(id="aileron-001", title="Block destructive shell", severity="high",
+                 match={"type": "tool_call", "tool.name": "shell",
+                        "tool.arguments_contains": ["rm -rf"]},
+                 action="block")]
+
+
+def test_batch_array_cannot_bypass_block(monkeypatch, tmp_path):
+    """A JSON-RPC batch must be policed, not forwarded verbatim."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
+                         rules=_blocking_rule())
+    sess.send(json.dumps([{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "shell", "arguments": {"cmd": "rm -rf /"}}}]).encode())
+    resp = sess.recv_line()
+    assert resp["error"]["code"] == -32000
+    sess.close()
+    recs = list(sess.log)
+    assert [r["status"] for r in recs] == ["blocked"]
+
+
+def test_id_less_tools_call_cannot_bypass_block(monkeypatch, tmp_path):
+    """No id still means the child would execute it, so policy must run."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
+                         rules=_blocking_rule())
+    sess.send(json.dumps({"jsonrpc": "2.0", "method": "tools/call",
+                          "params": {"name": "shell", "arguments": {"cmd": "rm -rf /"}}}).encode())
+    sess.close()
+    recs = list(sess.log)
+    assert len(recs) == 1 and recs[0]["status"] == "blocked"
+
+
+def test_unparseable_message_is_rejected_not_forwarded(monkeypatch, tmp_path):
+    """If we cannot parse it we cannot police it: never pass it through."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
+                         rules=_blocking_rule())
+    sess.client_w.write(b'{"jsonrpc":"2.0","id":1,"method":"tools/call","s":"\xff\xfe"}\n')
+    sess.client_w.flush()
+    resp = sess.recv_line()
+    assert resp["error"]["code"] == -32700
+    sess.close()
+
+
+def test_duplicate_jsonrpc_id_does_not_erase_a_record(monkeypatch, tmp_path):
+    """A reused in-flight id must not silently drop the earlier audit event."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON])
+    for name in ("sensitive", "cover"):
+        sess.send(json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                              "params": {"name": name, "arguments": {}}}).encode())
+    sess.close()
+    names = [r["tool"]["name"] for r in sess.log if r["type"] == "tool_call"]
+    assert "sensitive" in names and "cover" in names
+    assert verify(sess.log.path).ok
+
+
+def test_content_length_is_bounded():
+    import io as _io
+
+    from aileron.proxy import MAX_MESSAGE_BYTES, _read_message
+
+    huge = str(MAX_MESSAGE_BYTES + 1).encode()
+    with pytest.raises(ValueError, match="too large"):
+        _read_message(_io.BytesIO(b"Content-Length: " + huge + b"\r\n\r\n{}"))

@@ -130,3 +130,42 @@ def test_private_key_created_restrictive_and_refuses_symlink(tmp_path):
     with pytest.raises(OSError):
         generate_keypair(str(d2))
     assert not target.exists()
+
+
+def test_checkpoint_reordering_cannot_roll_back_coverage(tmp_path):
+    """Every valid checkpoint must hold, regardless of file order."""
+    key_path, _pub = generate_keypair(str(tmp_path))
+    log_path = make_log(tmp_path, n=3)
+    sign_checkpoint(log_path, key_path)          # count=3
+    log = ChainLog(log_path)
+    for _ in range(3):
+        log.append(new_event("tool_call", "s", "bot", "fw", tool={"name": "t"}))
+    sign_checkpoint(log_path, key_path)          # count=6
+    assert verify_checkpoint(log_path, key_path) is True
+
+    # Reorder so the narrow checkpoint is last, then truncate to it.
+    ckpt = f"{log_path}.checkpoints.jsonl"
+    lines = open(ckpt, encoding="utf-8").read().splitlines()
+    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
+    kept = open(log_path, encoding="utf-8").read().splitlines()[:3]
+    open(log_path, "w", encoding="utf-8").write("\n".join(kept) + "\n")
+    assert verify_checkpoint(log_path, key_path) is False
+
+
+def test_refuses_to_sign_empty_log(tmp_path):
+    key_path, _pub = generate_keypair(str(tmp_path))
+    empty = tmp_path / "empty.jsonl"
+    empty.touch()
+    with pytest.raises(ValueError, match="empty log"):
+        sign_checkpoint(str(empty), key_path)
+
+
+def test_public_key_write_refuses_symlink(tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("ORIGINAL", encoding="utf-8")
+    keydir = tmp_path / "keys"
+    keydir.mkdir()
+    os.symlink(victim, keydir / "aileron_ed25519.pub")
+    with pytest.raises(OSError):
+        generate_keypair(str(keydir))
+    assert victim.read_text(encoding="utf-8") == "ORIGINAL"

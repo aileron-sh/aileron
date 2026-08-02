@@ -154,9 +154,29 @@ def _cmd_sign_checkpoint(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify_checkpoint(args: argparse.Namespace) -> int:
+    import hashlib
+
     from .signing import verify_checkpoint
 
-    if verify_checkpoint(args.log, _default_verify_key(args.log, args.key)):
+    key = _default_verify_key(args.log, args.key)
+    if not Path(key).exists():
+        print(f"error: no verification key found (looked for {key}). "
+              f"Pass --key with the public key you trust.", file=sys.stderr)
+        return 1
+    # The key IS the trust anchor. Resolving it from the directory under audit
+    # means an attacker who can rewrite the log can also swap the key and
+    # re-sign — so say exactly which key was used, and warn when it came from
+    # alongside the evidence rather than from the operator.
+    resolved = Path(key).resolve()
+    fingerprint = hashlib.sha256(resolved.read_bytes()).hexdigest()[:16]
+    print(f"verifying against key {resolved} (sha256:{fingerprint})")
+    if not args.key and resolved.parent == Path(args.log).resolve().parent:
+        print("warning: this key sits next to the log it attests. An attacker "
+              "with write access to that directory could have replaced both. "
+              "Pass --key with an out-of-band copy for a meaningful check.",
+              file=sys.stderr)
+
+    if verify_checkpoint(args.log, key):
         print(f"OK: checkpoint valid for {args.log}")
         return 0
     print(f"FAILED: checkpoint invalid for {args.log}", file=sys.stderr)

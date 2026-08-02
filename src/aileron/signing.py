@@ -63,7 +63,10 @@ def generate_keypair(dir_path: str) -> tuple[str, str]:
             )
         )
     os.chmod(key_path, 0o600)  # normalize perms if the file pre-existed
-    with open(pub_path, "wb") as fh:
+    # Same O_NOFOLLOW hardening as the private key: a pre-planted symlink here
+    # would turn `aileron init` into an arbitrary-file overwrite.
+    pub_fd = os.open(pub_path, flags, 0o644)
+    with os.fdopen(pub_fd, "wb") as fh:
         fh.write(
             private.public_key().public_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -86,7 +89,11 @@ def sign_checkpoint(log_path: str, key_path: str) -> dict:
     if not result.ok:
         raise ValueError(f"refusing to sign broken chain: {result.errors}")
     events = chainlog.ChainLog.read(log_path)
-    tip_hash = events[-1]["hash"] if events else chainlog.GENESIS_PREV_HASH
+    if not events:
+        # A count=0 checkpoint attests to nothing yet reports OK against any
+        # later content, including a wiped log. Refuse to mint one.
+        raise ValueError("refusing to sign an empty log: nothing to attest")
+    tip_hash = events[-1]["hash"]
 
     with open(key_path, "rb") as fh:
         private = serialization.load_pem_private_key(fh.read(), password=None)
@@ -149,26 +156,48 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
         for line in fh:
             line = line.strip()
             if line:
-                checkpoints.append(json.loads(line))
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    checkpoints.append(obj)
     if not checkpoints:
-        return False
-    checkpoint = checkpoints[-1]
-
-    count = checkpoint.get("count")
-    if not isinstance(count, int) or count < 0:
-        return False
-    result = chainlog.verify(log_path)
-    if not result.ok or result.count < count:
-        return False
-    events = chainlog.ChainLog.read(log_path)
-    prefix_tip = events[count - 1]["hash"] if count else chainlog.GENESIS_PREV_HASH
-    if prefix_tip != checkpoint.get("tip_hash"):
         return False
 
     try:
         public = _load_public_key(key_path)
-        signature = base64.b64decode(checkpoint["signature"])
-        public.verify(signature, _signed_payload(checkpoint))
     except Exception:
         return False
+
+    # Trust file order for nothing: validate every signature, then hold the
+    # log to the WIDEST valid checkpoint. Otherwise merely reordering the
+    # checkpoints file would let an attacker roll coverage back and truncate
+    # everything above an older, narrower checkpoint.
+    valid = []
+    for checkpoint in checkpoints:
+        count = checkpoint.get("count")
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            continue  # a zero-coverage checkpoint attests to nothing
+        try:
+            signature = base64.b64decode(checkpoint["signature"])
+            public.verify(signature, _signed_payload(checkpoint))
+        except Exception:
+            continue
+        valid.append(checkpoint)
+    if not valid:
+        return False
+
+    result = chainlog.verify(log_path)
+    if not result.ok:
+        return False
+    events = chainlog.ChainLog.read(log_path)
+
+    # Every valid checkpoint must still hold, not just the widest one.
+    for checkpoint in valid:
+        count = checkpoint["count"]
+        if result.count < count:
+            return False  # log truncated below a signed prefix
+        if events[count - 1].get("hash") != checkpoint.get("tip_hash"):
+            return False
     return True

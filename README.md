@@ -100,16 +100,17 @@ $ aileron proxy --log run.chain.jsonl --rules rules -- \
 A blocked call returns a JSON-RPC error (`-32000: blocked by aileron rule
 <id>`) to the client; the child is never invoked.
 
-**Measured overhead** (`python benchmarks/bench_proxy.py`, 2,000 sequential
-calls, Python 3.13 / Apple Silicon) — the added round-trip latency per
-`tools/call`, including JSON-RPC parsing, policy evaluation, hash-chain
-append, and the extra process hop:
+**Measured overhead** (`python benchmarks/bench_proxy.py`, Python 3.13 /
+Apple Silicon; worst case across 3 runs of 1,500–2,000 sequential calls) —
+the added round-trip latency per `tools/call` with rules loaded, including
+JSON-RPC parsing, policy evaluation, hash-chain append, and the extra
+process hop:
 
 | tool arguments | p50 | p95 |
 |---|---|---|
-| 64 B | 0.07 ms | 0.09 ms |
-| 4 KB | 0.11 ms | 0.15 ms |
-| 32 KB | 0.31 ms | 0.45 ms |
+| 64 B | 0.08 ms | 0.12 ms |
+| 4 KB | 0.12 ms | 0.18 ms |
+| 32 KB | 0.33 ms | 0.44 ms |
 
 Run it on your own hardware before quoting a number. For context, a real MCP
 server call is typically 10–1000 ms, so mediation costs well under 1% of it.

@@ -196,7 +196,12 @@ class AgentSession:
             )
             if exc_type is not None:
                 ev["status"] = "error"
-                ev["meta"] = {"error": f"{exc_type.__name__}: {exc}"}
+                # The exception's str can embed tool arguments; honor the
+                # digest-only promise, matching track().
+                if getattr(self._sink, "capture_content", False):
+                    ev["meta"] = {"error": f"{exc_type.__name__}: {exc}"}
+                else:
+                    ev["meta"] = {"error": exc_type.__name__}
             assert self._sink is not None
             self._sink.append(ev)
         finally:

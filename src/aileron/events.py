@@ -41,12 +41,20 @@ EVENT_KEYS = {
 
 
 def canonical_json(obj: Any) -> str:
-    """Canonical JSON: sorted keys, tight separators, UTF-8 (no ASCII escaping).
+    """Canonical JSON: sorted keys, tight separators, ASCII-escaped.
 
     This is the single serializer the hash chain and signatures depend on;
     chainlog, policy, and signing all route through it so no copy can drift.
+
+    ``ensure_ascii=True`` keeps the output pure ASCII, so lone surrogates and
+    other non-encodable text become ``\\uXXXX`` escapes instead of raising at
+    hash time (a peer-supplied surrogate must never be able to crash the
+    integrity check). ``allow_nan=False`` rejects NaN/Infinity, which are not
+    valid JSON and would otherwise be written into the journal.
     """
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    )
 
 
 def digest(obj: Any) -> str:

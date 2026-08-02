@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aileron.events import EVENT_TYPES, canonical, digest, event_hash, new_event, validate
@@ -75,9 +77,28 @@ def test_event_hash_determinism():
     assert event_hash(ev) == event_hash(dict(ev))
     expected = hashlib.sha256(canonical(ev).encode("utf-8")).hexdigest()
     assert event_hash(ev) == expected
-    # non-ASCII is not escaped
+    # Non-ASCII is \u-escaped so canonical output is always pure ASCII and
+    # always encodable — a peer-supplied lone surrogate must not be able to
+    # raise inside the integrity check.
     ev["meta"]["x"] = "héllo"
-    assert "héllo" in canonical(ev)
+    canon = canonical(ev)
+    assert "héllo" not in canon
+    assert "h\\u00e9llo" in canon
+    canon.encode("ascii")  # must not raise
+
+
+def test_canonical_rejects_non_finite_and_survives_surrogates():
+    from aileron.events import canonical_json
+
+    # NaN/Infinity are not valid JSON; refuse to write them into the journal.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            canonical_json({"latency_ms": bad})
+
+    # A lone surrogate must serialize (escaped) rather than blow up hashing.
+    out = canonical_json({"s": "\ud800"})
+    assert out.encode("ascii")
+    assert hashlib.sha256(out.encode("utf-8")).hexdigest()
 
 
 def test_digest_is_canonical():

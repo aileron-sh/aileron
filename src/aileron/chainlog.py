@@ -11,6 +11,11 @@ from .events import canonical_json, event_hash
 
 GENESIS_PREV_HASH = "0" * 64
 
+# Sentinel for "the chain is broken here" — it equals no real hash, so every
+# subsequent event is reported as unverifiable rather than silently accepted
+# by resyncing to genesis.
+_BROKEN = object()
+
 
 @dataclass
 class VerifyResult:
@@ -126,24 +131,38 @@ def verify(path: str) -> VerifyResult:
                 continue
             try:
                 ev = json.loads(line)
-            except json.JSONDecodeError as exc:
+            except (ValueError, RecursionError) as exc:
                 bad(expected_seq, f"line {lineno}: invalid JSON: {exc}")
                 expected_seq += 1
-                expected_prev = GENESIS_PREV_HASH  # chain unrecoverable here
+                expected_prev = _BROKEN  # nothing may chain onto a bad line
                 continue
             if not isinstance(ev, dict):
                 bad(expected_seq, f"line {lineno}: event is not a JSON object")
                 expected_seq += 1
-                expected_prev = GENESIS_PREV_HASH  # chain unrecoverable here
+                expected_prev = _BROKEN
                 continue
+            # The stored bytes are authoritative, not just the parsed object:
+            # re-serializing must reproduce the line exactly. This catches
+            # duplicate keys, non-canonical number literals, and any other
+            # content smuggled past json.loads' last-value-wins behavior.
+            try:
+                if canonical_json(ev) != line:
+                    bad(ev.get("seq"), f"line {lineno}: non-canonical encoding")
+            except (ValueError, TypeError) as exc:
+                bad(ev.get("seq"), f"line {lineno}: uncanonicalizable content: {exc}")
             count += 1
             seq = ev.get("seq")
             if seq != expected_seq:
                 bad(seq, f"seq discontinuity at line {lineno}: expected {expected_seq}, got {seq}")
-            if ev.get("prev_hash") != expected_prev:
+            if expected_prev is _BROKEN:
+                bad(seq, f"seq {seq}: unverifiable, chain broken at an earlier line")
+            elif ev.get("prev_hash") != expected_prev:
                 bad(seq, f"prev_hash mismatch at seq {seq}")
-            actual = event_hash(ev)
-            if ev.get("hash") != actual:
+            try:
+                actual = event_hash(ev)
+            except (ValueError, TypeError):
+                actual = None  # already reported as uncanonicalizable above
+            if actual is None or ev.get("hash") != actual:
                 bad(seq, f"hash mismatch at seq {seq} (content tampered)")
             expected_seq = (seq if isinstance(seq, int) else expected_seq) + 1
             expected_prev = ev.get("hash", GENESIS_PREV_HASH)

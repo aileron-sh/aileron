@@ -186,3 +186,14 @@ def test_block_rule_on_arguments_in_default_digest_mode(tmp_path):
     assert rec["tool"]["arguments_digest"]
     assert "rm -rf" not in open(log.path, encoding="utf-8").read()
     assert verify(log.path).ok
+
+
+def test_agent_end_error_redacted_without_capture_content(tmp_path):
+    """An exception string can embed tool arguments; digest-only must hold."""
+    log = ChainLog(str(tmp_path / "c.jsonl"))
+    with pytest.raises(ValueError):
+        with track_agent("bot", "fw", log):
+            raise ValueError("SECRET_TOKEN_abc123")
+    raw = open(log.path, encoding="utf-8").read()
+    assert "SECRET_TOKEN_abc123" not in raw
+    assert "ValueError" in raw
