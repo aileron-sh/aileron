@@ -183,19 +183,26 @@ the extra process hop.
 | 4 KB | 0.064 | 0.370 | **0.306** | 0.353 |
 | 32 KB | 0.171 | 0.800 | **0.629** | 0.668 |
 
-**macOS arm64** — Apple M2 Pro, Python 3.13.7, idle machine:
+**macOS arm64** — Apple M2 Pro, Python 3.13.7, idle machine. Each row is the
+worst of three passes, so these are pessimistic rather than cherry-picked:
 
 | tool arguments | direct (baseline) median | + proxy & rules median | **added median** | added p95 |
 |---|---|---|---|---|
-| 64 B | 0.0132 | 0.0970 | **0.0837** | 0.126 |
-| 4 KB | 0.0313 | 0.1747 | **0.1435** | 0.183 |
-| 32 KB | 0.1354 | 0.5334 | **0.3980** | 0.512 |
+| 64 B | 0.0133 | 0.1003 | **0.0870** | 0.183 |
+| 4 KB | 0.0290 | 0.1811 | **0.1521** | 0.250 |
+| 32 KB | 0.1375 | 0.5227 | **0.3852** | 0.468 |
 
-All values are milliseconds. Each table is a **single coherent run**, so
+All values are milliseconds. Every row comes from a **single run**, so
 `added = (proxy & rules) − direct` holds exactly and you can check the
 subtraction. The tool reports mean / median / p95 / p99; these tables quote
-median and p95. Linux is roughly 3× slower than the Mac because a shared-vCPU
-CI runner is the slower machine — those are the conservative numbers, and the
+median and p95.
+
+Medians are stable across runs (64 B measured 0.087 / 0.085 / 0.087 ms over
+three passes); **p95 is not** — tail latency on a desktop OS swings with
+scheduling, and a single pass can look 40% better or worse than its
+neighbour. Treat the median as the number and the p95 as an order of
+magnitude. Linux is roughly 3× slower than the Mac because a shared-vCPU CI
+runner is the slower machine — those are the conservative figures, and the
 ones CI enforces.
 
 **Caveats, stated plainly.** These are *sequential* stdio round-trips — one
