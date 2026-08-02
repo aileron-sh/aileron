@@ -121,3 +121,18 @@ def test_report_from_chainlog_roundtrip(tmp_path):
     assert "Custom Title" in doc
     assert f"VERIFIED {len(events)} events" in doc
     assert "read_file" in doc
+
+
+def test_badge_escapes_verify_result_fields(tmp_path):
+    """first_bad_seq/count reach the badge from a tampered journal."""
+    class VR:
+        ok = False
+        count = 0
+        first_bad_seq = '<img src=x onerror=alert(1)>'
+        errors = []
+
+    out = tmp_path / "r.html"
+    render_html([], VR(), str(out))
+    doc = out.read_text(encoding="utf-8")
+    assert "<img src=x" not in doc
+    assert "&lt;img" in doc

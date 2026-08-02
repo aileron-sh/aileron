@@ -205,3 +205,15 @@ def test_broken_line_does_not_let_forged_events_verify(tmp_path):
     result = verify(str(path))
     assert result.ok is False
     assert any("chain broken" in e for e in result.errors)
+
+
+def test_raw_invalid_utf8_reports_tampered_instead_of_raising(tmp_path):
+    """The integrity check must never terminate by exception."""
+    path = tmp_path / "c.jsonl"
+    log = ChainLog(str(path))
+    log.append(make_ev(1))
+    with open(path, "ab") as fh:
+        fh.write(b'{"x":"\xff\xfe"}\n')
+    result = verify(str(path))
+    assert result.ok is False
+    assert any("invalid UTF-8" in e for e in result.errors)

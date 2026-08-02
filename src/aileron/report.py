@@ -88,11 +88,11 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
 def _badge(verify_result: Any) -> str:
     """Verification badge HTML: VERIFIED n events / TAMPERED at seq N."""
     ok = bool(_get(verify_result, "ok", False))
-    count = _get(verify_result, "count", 0)
+    count = html.escape(str(_get(verify_result, "count", 0)))
     if ok:
         return f'<span class="badge verified">VERIFIED {count} events</span>'
     seq = _get(verify_result, "first_bad_seq")
-    where = f" at seq {seq}" if seq is not None else ""
+    where = f" at seq {html.escape(str(seq))}" if seq is not None else ""
     return f'<span class="badge tampered">TAMPERED{where}</span>'
 
 

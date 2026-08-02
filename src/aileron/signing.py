@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -35,6 +36,31 @@ def _signed_payload(checkpoint: dict) -> bytes:
     return _canonical(
         {k: v for k, v in checkpoint.items() if k not in ("signature", "pubkey_path")}
     )
+
+
+def _checkpoint_hash(checkpoint: dict) -> str:
+    """Hash of a checkpoint's signed payload, used to chain checkpoints."""
+    return hashlib.sha256(_signed_payload(checkpoint)).hexdigest()
+
+
+def _read_checkpoints(log_path: str) -> list[dict]:
+    """All checkpoint objects recorded for ``log_path``, in file order."""
+    ckpt_file = f"{log_path}.checkpoints.jsonl"
+    if not os.path.exists(ckpt_file):
+        return []
+    out: list[dict] = []
+    with open(ckpt_file, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    return out
 
 
 def generate_keypair(dir_path: str) -> tuple[str, str]:
@@ -101,9 +127,17 @@ def sign_checkpoint(log_path: str, key_path: str) -> dict:
         raise ValueError(f"not an ed25519 private key: {key_path}")
 
     pub_path = os.path.join(os.path.dirname(key_path) or ".", PUBLIC_KEY_NAME)
+    # Chain the checkpoints to each other, exactly as events are chained. A
+    # deleted or reordered line then breaks a signature-covered link instead of
+    # silently rolling coverage back to an older, narrower checkpoint.
+    prior = _read_checkpoints(log_path)
+    index = len(prior) + 1
+    prev_ckpt_hash = _checkpoint_hash(prior[-1]) if prior else chainlog.GENESIS_PREV_HASH
     checkpoint = {
         "ts": _now_ts(),
         "log_path": str(log_path),
+        "index": index,
+        "prev_checkpoint_hash": prev_ckpt_hash,
         "count": result.count,
         "tip_hash": tip_hash,
     }
@@ -148,20 +182,7 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
     checkpoint was signed do not invalidate it; truncation below the
     checkpointed prefix, or any rewrite of it, does.
     """
-    ckpt_file = f"{log_path}.checkpoints.jsonl"
-    if not os.path.exists(ckpt_file):
-        return False
-    checkpoints = []
-    with open(ckpt_file, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(obj, dict):
-                    checkpoints.append(obj)
+    checkpoints = _read_checkpoints(log_path)
     if not checkpoints:
         return False
 
@@ -170,10 +191,7 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
     except Exception:
         return False
 
-    # Trust file order for nothing: validate every signature, then hold the
-    # log to the WIDEST valid checkpoint. Otherwise merely reordering the
-    # checkpoints file would let an attacker roll coverage back and truncate
-    # everything above an older, narrower checkpoint.
+    # Trust file order for nothing: validate every signature first.
     valid = []
     for checkpoint in checkpoints:
         count = checkpoint.get("count")
@@ -187,6 +205,18 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
         valid.append(checkpoint)
     if not valid:
         return False
+
+    # The checkpoint set is itself chained: indices must form a gap-free 1..N
+    # run and each must name its predecessor. Otherwise deleting a line would
+    # roll coverage back to an older, narrower checkpoint.
+    valid.sort(key=lambda c: c["index"] if isinstance(c.get("index"), int) else -1)
+    prev_hash = chainlog.GENESIS_PREV_HASH
+    for position, checkpoint in enumerate(valid, start=1):
+        if checkpoint.get("index") != position:
+            return False  # a checkpoint was deleted, duplicated, or reordered
+        if checkpoint.get("prev_checkpoint_hash") != prev_hash:
+            return False
+        prev_hash = _checkpoint_hash(checkpoint)
 
     result = chainlog.verify(log_path)
     if not result.ok:

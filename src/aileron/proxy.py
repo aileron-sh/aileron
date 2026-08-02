@@ -10,12 +10,16 @@ child and records the event with ``status='blocked'``.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from typing import Any, BinaryIO
+
+# RFC 7230 field-name followed by a colon. Header lines must look like headers.
+_HEADER_RE = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+:")
 
 from aileron import events
 from aileron.policy import decide
@@ -24,17 +28,42 @@ from aileron.policy import decide
 # enforcement point, so exhausting it is a way to stop mediation.
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
+# Cap on in-flight calls awaiting a response. Far above any real client's
+# window; prevents a peer that never reads responses from growing `pending`
+# without bound.
+MAX_PENDING = 4096
+
+# How long to wait for the child to exit before killing it, so the shutdown
+# drain that journals in-flight calls always runs.
+CHILD_EXIT_TIMEOUT = 5.0
+
 # Sentinel: the message could not be parsed, so it must not be forwarded.
 _UNPARSEABLE = object()
 
 
-def _respond(client_out: BinaryIO, wire: bytes, obj: dict) -> None:
-    """Send a locally generated JSON-RPC reply, framed like the request."""
+def _canonical_wire(msg: Any) -> bytes:
+    """Re-serialize a parsed JSON-RPC message to compact, newline-free bytes.
+
+    Compact separators mean no insignificant whitespace, and json.dumps escapes
+    any newline inside a string, so the result can never be re-split into more
+    messages than the one that was policed.
+    """
+    return json.dumps(msg, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def _respond_raw(client_out: BinaryIO, wire: bytes, obj: Any) -> None:
+    """Send a locally generated JSON-RPC reply (object or batch), framed like
+    the request."""
     try:
-        client_out.write(_frame(json.dumps(obj).encode(), wire))
+        client_out.write(_frame(_canonical_wire(obj), wire))
         client_out.flush()
     except (BrokenPipeError, OSError):
         pass
+
+
+def _respond(client_out: BinaryIO, wire: bytes, obj: dict) -> None:
+    """Send a locally generated JSON-RPC reply, framed like the request."""
+    _respond_raw(client_out, wire, obj)
 
 
 def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
@@ -52,8 +81,12 @@ def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
     if first in (b"{", b"["):
         # Newline-delimited JSON. readline() reads the remainder of the line in
         # one buffered call; a byte-at-a-time loop here costs one syscall per
-        # byte and dominates latency on large tool arguments.
-        rest = stream.readline()
+        # byte and dominates latency on large tool arguments. The cap is the
+        # same one the framed path enforces — neither peer may drive us to
+        # buffer without bound.
+        rest = stream.readline(MAX_MESSAGE_BYTES)
+        if not rest.endswith(b"\n") and len(rest) >= MAX_MESSAGE_BYTES - 1:
+            raise ValueError("newline-delimited message too large")
         if rest.endswith(b"\n"):
             rest = rest[:-1]  # drop the delimiter, keep any \r (as before)
         payload = bytes(first + rest)
@@ -62,10 +95,17 @@ def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
     # line-oriented, so read them a line at a time rather than a byte at a time.
     headers = bytearray(first)
     while True:
-        line = stream.readline()
+        line = stream.readline(MAX_MESSAGE_BYTES)
         if not line:
             return None
         headers += line
+        if len(headers) > MAX_MESSAGE_BYTES:
+            raise ValueError("header block too large")
+        # Only genuine headers may appear here. Anything else is an attempt to
+        # park extra JSON-RPC traffic in the header block, where it would be
+        # invisible to policy but still reach a newline-delimited child.
+        if line not in (b"\r\n", b"\n") and not _HEADER_RE.match(line):
+            raise ValueError(f"malformed header line: {bytes(line[:40])!r}")
         if headers.endswith(b"\r\n\r\n") or headers.endswith(b"\n\n"):
             break
     # Reject ambiguous framing: a duplicate or non-numeric Content-Length lets
@@ -132,7 +172,12 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
             while True:
                 try:
                     got = _read_message(child.stdout)
-                except (ValueError, OSError):
+                except (ValueError, OSError) as exc:
+                    # A framing error from the child ends response recording.
+                    # Say so and stop mediating rather than exiting quietly.
+                    print(f"aileron: child framing error, recording stopped: {exc}",
+                          file=sys.stderr, flush=True)
+                    record_failed.set()
                     break
                 if got is None:
                     break
@@ -189,7 +234,11 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                             record_failed.set()
                             break
                 try:
-                    client_out.write(wire)
+                    # Re-serialize the child's response too: a malicious server
+                    # must not be able to smuggle extra frames past us to the
+                    # client any more than the client can to it.
+                    out = _canonical_wire(msg) if msg is not None else payload
+                    client_out.write(_frame(out, wire))
                     client_out.flush()
                 except (BrokenPipeError, OSError):
                     break
@@ -238,10 +287,18 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                      if isinstance(m, dict) and m.get("method") == "tools/call"]
 
             blocked_rule: str | None = None
+            blocked_id: Any = None
             staged: list[tuple[Any, dict]] = []
             for call in calls:
-                params = call.get("params") or {}
+                # params may legally be an array (positional) or, from a hostile
+                # client, any JSON type. Never assume it is a mapping.
+                raw_params = call.get("params")
+                params = raw_params if isinstance(raw_params, dict) else {}
                 arguments = params.get("arguments")
+                if arguments is None and raw_params is not None and not isinstance(
+                    raw_params, dict
+                ):
+                    arguments = raw_params  # keep it auditable and policy-visible
                 # Arguments are always attached in memory so policy rules can
                 # match on content; ChainLog.append strips them at persist
                 # time unless the log was opened with capture_content=True.
@@ -261,6 +318,7 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                     decision = decide(ev, rules)
                     if decision.action == "block":
                         blocked_rule = decision.rule_ids[0]
+                        blocked_id = call.get("id")
                         ev["status"] = "blocked"
                         ev["policy"] = {"rule_id": blocked_rule, "action": "block"}
                         append(ev)
@@ -273,15 +331,23 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 staged.append((call.get("id"), ev))
 
             if blocked_rule is not None:
-                # Refuse the entire message rather than trying to forward a
-                # partial batch: the child must not see any of it.
-                reply_id = calls[0].get("id") if calls else None
-                _respond(
-                    client_out, wire,
-                    {"jsonrpc": "2.0", "id": reply_id,
-                     "error": {"code": -32000,
-                               "message": f"blocked by aileron rule {blocked_rule}"}},
-                )
+                # Refuse the entire message rather than forwarding a partial
+                # batch: the child must not see any of it. Attribute the denial
+                # to the call that actually matched, and answer the others so no
+                # request in a batch is left hanging.
+                denial = {"jsonrpc": "2.0", "id": blocked_id,
+                          "error": {"code": -32000,
+                                    "message": f"blocked by aileron rule {blocked_rule}"}}
+                if isinstance(msg, list):
+                    others = [
+                        {"jsonrpc": "2.0", "id": c.get("id"),
+                         "error": {"code": -32000,
+                                   "message": "refused: batch contained a blocked call"}}
+                        for c in calls if c.get("id") != blocked_id
+                    ]
+                    _respond_raw(client_out, wire, [denial] + others)
+                else:
+                    _respond(client_out, wire, denial)
                 continue  # child NOT invoked
 
             for call_id, ev in staged:
@@ -292,6 +358,13 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                     append(ev)
                     continue
                 with lock:
+                    if len(pending) >= MAX_PENDING and call_id not in pending:
+                        # Fail closed: refuse rather than grow without bound.
+                        ev["status"] = "blocked"
+                        ev["policy"] = {"rule_id": "aileron-pending-limit",
+                                        "action": "block"}
+                        log.append(ev)
+                        continue
                     prior = pending.get(call_id)
                     if prior is not None:
                         # A reused in-flight id would silently displace the
@@ -304,8 +377,21 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                         }
                         log.append(displaced)
                     pending[call_id] = {"event": ev, "started": time.perf_counter()}
+            if record_failed.is_set():
+                # Recording broke while we were policing this call. Refuse it
+                # rather than let it through unrecorded.
+                _respond(client_out, wire,
+                         {"jsonrpc": "2.0", "id": calls[0].get("id") if calls else None,
+                          "error": {"code": -32000,
+                                    "message": "aileron: recording unavailable, call refused"}})
+                break
             try:
-                child.stdin.write(wire)
+                # Forward a re-serialization of exactly what policy saw, never
+                # the peer's raw bytes. Verbatim forwarding lets the child
+                # re-split the stream differently than we parsed it (extra
+                # JSON-RPC parked in a header block, or raw newlines inside a
+                # Content-Length body), executing calls policy never inspected.
+                child.stdin.write(_frame(_canonical_wire(msg), wire))
                 child.stdin.flush()
             except (BrokenPipeError, OSError):
                 break
@@ -314,7 +400,13 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
             child.stdin.close()
         except OSError:
             pass
-        returncode = child.wait()
+        # Bound the wait: a child that never exits must not strand the in-flight
+        # calls that the drain below is responsible for journaling.
+        try:
+            returncode = child.wait(timeout=CHILD_EXIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            returncode = child.wait()
         reader.join(timeout=5.0)
         if reader.is_alive():
             child.kill()

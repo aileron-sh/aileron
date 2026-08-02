@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [0.1.2] — 2026-08-02
+
+**Security release. Upgrade from 0.1.1 and 0.1.0.** A follow-up adversarial
+audit confirmed the 0.1.1 fixes hold, but found a *critical* enforcement
+bypass that both earlier versions share.
+
+### Security
+
+- **Critical: the proxy policed the parsed message but forwarded the raw
+  bytes.** `_read_message` returned the exact bytes it received, and
+  `run_proxy` wrote those to the child verbatim. Because a child may split
+  that byte range differently than the proxy parsed it, a `tools/call` could
+  execute without ever being policed or journaled — and `aileron verify`
+  still reported OK, because nothing was tampered with; the call was simply
+  never recorded. Two working variants:
+  - **Header smuggling.** Every line before the blank line was accumulated
+    as "headers" and forwarded. A JSON-RPC message parked on its own line in
+    the header block is invisible to policy but is executed by a
+    newline-delimited child. A 148-byte payload was enough.
+  - **Body re-splitting.** A `Content-Length` body may legally contain raw
+    newlines; the proxy saw one frame where a newline-delimited child saw
+    several.
+
+  Fixed structurally: the proxy now forwards a **re-serialization of the
+  message it policed** (compact separators, ASCII-escaped, no raw newlines)
+  rather than peer-supplied bytes, in both directions. The message boundary
+  the child sees is now the same object the policy engine inspected, by
+  construction. Header lines are additionally validated against RFC 7230 and
+  the header block is bounded.
+- **Checkpoints are now chained.** Each carries a signed `index` and
+  `prev_checkpoint_hash`, so deleting, duplicating, or reordering a
+  checkpoint within the sequence is detected. Deleting the *newest*
+  checkpoint remains undetectable — it is tail truncation, now stated
+  explicitly in SECURITY.md.
+- `verify()` no longer raises on raw invalid UTF-8 in the journal; it
+  reports it as tampering. The integrity check must never terminate by
+  exception.
+- The HTML report's verification badge now escapes `count` and
+  `first_bad_seq`, the only two fields that reached the page unescaped.
+- A non-mapping `params` on a `tools/call` no longer crashes the proxy with
+  an unhandled `AttributeError`.
+- `MAX_MESSAGE_BYTES` now bounds the newline-delimited path and the header
+  block, not just `Content-Length`.
+- `pending` is capped (`MAX_PENDING`); calls beyond it are refused and
+  journaled rather than growing memory without bound.
+- The child is waited on with a timeout, so a child that never exits can no
+  longer strand in-flight calls outside the journal.
+- `record_failed` is re-checked immediately before forwarding, closing the
+  window where a call read before a journal failure was still delivered.
+- A framing error from the child now sets `record_failed` and prints a
+  diagnostic instead of silently ending response recording.
+- A blocked batch now answers every request in it, and attributes the denial
+  to the call that actually matched.
+
+### Changed
+
+- A blocked JSON-RPC **batch** is answered with a batch response, per
+  JSON-RPC 2.0, instead of a single error object.
+
 ## [0.1.1] — 2026-08-01
 
 **Security release. Upgrade from 0.1.0.** An adversarial audit found six

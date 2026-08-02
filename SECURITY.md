@@ -61,6 +61,19 @@ a reportable vulnerability.
   Signed checkpoints bound this: forging forward past a checkpoint requires
   the Ed25519 private key. **Keep signing keys off the recorded host.**
   External anchoring (Sigstore/Rekor) is on the roadmap for non-repudiation.
+- **Tail truncation, including of the checkpoint file.** Checkpoints are
+  chained to each other (each carries a signed `index` and
+  `prev_checkpoint_hash`), so deleting, duplicating, or reordering a
+  checkpoint *within* the sequence is detected. Deleting the most recent
+  checkpoint(s) is not: it is the same problem as truncating the tail of any
+  append-only file, and no purely local scheme can detect it. Anchoring the
+  newest checkpoint somewhere the attacker does not control — a transparency
+  log, a remote copy, a monitoring system — is what closes this.
+- **A hostile MCP client or server can stop recording, not corrupt it.** The
+  proxy fails closed: if the journal cannot be written it stops forwarding
+  tool calls rather than letting them run unrecorded. A peer can therefore
+  deny mediation (by crashing the proxy), but cannot obtain unlogged
+  execution through it.
 - **SDK instrumentation is cooperative.** `@track` records the code paths
   you decorate. Agent code — or an attacker controlling it — can simply not
   call the wrapped function. This is inherent to in-process SDKs; the MCP

@@ -169,3 +169,35 @@ def test_public_key_write_refuses_symlink(tmp_path):
     with pytest.raises(OSError):
         generate_keypair(str(keydir))
     assert victim.read_text(encoding="utf-8") == "ORIGINAL"
+
+
+def test_deleting_an_intermediate_checkpoint_is_detected(tmp_path):
+    """Checkpoints are chained, so a gap in the sequence is caught."""
+    key_path, _pub = generate_keypair(str(tmp_path))
+    log_path = str(tmp_path / "a.jsonl")
+    log = ChainLog(log_path)
+    for c in range(3):
+        for i in range(3):
+            log.append(new_event("tool_call", "s", "b", "f", tool={"name": f"c{c}i{i}"}))
+        sign_checkpoint(log_path, key_path)
+    assert verify_checkpoint(log_path, key_path) is True
+
+    ckpt = f"{log_path}.checkpoints.jsonl"
+    lines = open(ckpt, encoding="utf-8").read().splitlines()
+    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[0], lines[2]]) + "\n")
+    assert verify_checkpoint(log_path, key_path) is False
+
+
+def test_reordering_alone_still_verifies_when_the_log_is_intact(tmp_path):
+    """Order in the file is not meaningful; the signed index is."""
+    key_path, _pub = generate_keypair(str(tmp_path))
+    log_path = str(tmp_path / "a.jsonl")
+    log = ChainLog(log_path)
+    for c in range(2):
+        for i in range(3):
+            log.append(new_event("tool_call", "s", "b", "f", tool={"name": "t"}))
+        sign_checkpoint(log_path, key_path)
+    ckpt = f"{log_path}.checkpoints.jsonl"
+    lines = open(ckpt, encoding="utf-8").read().splitlines()
+    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
+    assert verify_checkpoint(log_path, key_path) is True

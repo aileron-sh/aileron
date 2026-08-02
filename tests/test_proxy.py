@@ -326,13 +326,40 @@ def test_batch_array_cannot_bypass_block(monkeypatch, tmp_path):
     """A JSON-RPC batch must be policed, not forwarded verbatim."""
     sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
                          rules=_blocking_rule())
-    sess.send(json.dumps([{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                           "params": {"name": "shell", "arguments": {"cmd": "rm -rf /"}}}]).encode())
-    resp = sess.recv_line()
-    assert resp["error"]["code"] == -32000
-    sess.close()
+    try:
+        sess.send(json.dumps([{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                               "params": {"name": "shell",
+                                          "arguments": {"cmd": "rm -rf /"}}}]).encode())
+        # A batch request gets a batch response (JSON-RPC 2.0).
+        resp = sess.recv_line()
+        assert isinstance(resp, list) and len(resp) == 1
+        assert resp[0]["id"] == 1
+        assert resp[0]["error"]["code"] == -32000
+    finally:
+        sess.close()
     recs = list(sess.log)
     assert [r["status"] for r in recs] == ["blocked"]
+
+
+def test_blocked_batch_answers_every_request_and_blames_the_right_one(monkeypatch, tmp_path):
+    """The denial must name the call that matched, and no id may go unanswered."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
+                         rules=_blocking_rule())
+    try:
+        sess.send(json.dumps([
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "read_file", "arguments": {"path": "/tmp/x"}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "shell", "arguments": {"cmd": "rm -rf /"}}},
+        ]).encode())
+        resp = sess.recv_line()
+        by_id = {r["id"]: r for r in resp}
+        assert set(by_id) == {1, 2}
+        # id=2 is the one that matched the block rule.
+        assert "blocked by aileron rule" in by_id[2]["error"]["message"]
+        assert "batch contained a blocked call" in by_id[1]["error"]["message"]
+    finally:
+        sess.close()
 
 
 def test_id_less_tools_call_cannot_bypass_block(monkeypatch, tmp_path):

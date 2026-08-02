@@ -82,14 +82,17 @@ class ChainLog:
         and appendable after a crash. ``verify`` is the integrity authority
         and still flags such a line; readers here are best-effort.
         """
-        with open(self.path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
+        with open(self.path, "rb") as fh:
+            for raw_line in fh:
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
                 if not line:
                     continue
                 try:
                     obj = json.loads(line)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
                     continue
                 if isinstance(obj, dict):
                     yield obj
@@ -124,9 +127,17 @@ def verify(path: str) -> VerifyResult:
     count = 0
     expected_seq = 1
     expected_prev = GENESIS_PREV_HASH
-    with open(path, "r", encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, start=1):
-            line = line.strip()
+    # Read bytes and decode per line: raw invalid UTF-8 in the journal must be
+    # reported as tampering, not raise out of the integrity check itself.
+    with open(path, "rb") as fh:
+        for lineno, raw_line in enumerate(fh, start=1):
+            try:
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError as exc:
+                bad(expected_seq, f"line {lineno}: invalid UTF-8: {exc}")
+                expected_seq += 1
+                expected_prev = _BROKEN
+                continue
             if not line:
                 continue
             try:
