@@ -69,6 +69,15 @@ a reportable vulnerability.
   append-only file, and no purely local scheme can detect it. Anchoring the
   newest checkpoint somewhere the attacker does not control — a transparency
   log, a remote copy, a monitoring system — is what closes this.
+
+  Note that `aileron verify` cross-checks an adjacent
+  `<log>.checkpoints.jsonl` when one exists, so truncating the journal while
+  leaving the checkpoint file behind *is* reported. That check is
+  **unauthenticated** — it compares counts and tip hashes without verifying
+  signatures, because `verify` requires no key. It raises the cost of naive
+  truncation; it is not the cryptographic guarantee. Use
+  `aileron verify-checkpoint` with a public key you obtained out of band for
+  that.
 - **A hostile MCP client or server can stop recording, not corrupt it.** The
   proxy fails closed: if the journal cannot be written it stops forwarding
   tool calls rather than letting them run unrecorded. A peer can therefore

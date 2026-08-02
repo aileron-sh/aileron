@@ -151,6 +151,43 @@ def sign_checkpoint(log_path: str, key_path: str) -> dict:
     return checkpoint
 
 
+def check_against_checkpoints(log_path: str) -> list[str]:
+    """Cross-check a log against the checkpoints file sitting next to it.
+
+    Returns a list of inconsistency messages; empty means consistent (or that
+    there are no checkpoints to check against).
+
+    **Unauthenticated by design.** Signatures are not verified here because no
+    key is required to run ``aileron verify`` — use ``verify-checkpoint`` for
+    the cryptographic guarantee. What this catches is the common, cheap case:
+    a log that was truncated or rewritten while the checkpoint file that
+    contradicts it was left in place. Without this, ``verify`` reports OK on a
+    truncated journal even though the evidence of truncation is lying beside
+    it, which is the worst possible answer to give an operator.
+    """
+    checkpoints = _read_checkpoints(log_path)
+    if not checkpoints:
+        return []
+    events = chainlog.ChainLog.read(log_path)
+    problems: list[str] = []
+    for checkpoint in checkpoints:
+        count = checkpoint.get("count")
+        tip = checkpoint.get("tip_hash")
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            continue
+        if len(events) < count:
+            problems.append(
+                f"log has {len(events)} events but a checkpoint attests to "
+                f"{count} — the journal appears truncated"
+            )
+        elif events[count - 1].get("hash") != tip:
+            problems.append(
+                f"event at seq {count} does not match the checkpointed tip "
+                f"hash — the journal appears rewritten"
+            )
+    return problems
+
+
 def _load_public_key(key_path: str) -> Ed25519PublicKey:
     """Load an ed25519 public key from ``key_path``; accepts a PEM public key,
     a PEM private key (public half derived), or a directory containing the

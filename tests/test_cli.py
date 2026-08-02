@@ -197,3 +197,74 @@ def test_init_seeds_example_rules(tmp_path, capsys):
     from aileron.policy import load_rules
     ids = {r.id for r in load_rules(str(rules_dir))}
     assert {"aileron-001", "aileron-002"} <= ids
+
+
+def _log_with_checkpoint(tmp_path, n=6):
+    """A valid log plus a signed checkpoint attesting to all n events."""
+    from aileron.signing import generate_keypair, sign_checkpoint
+
+    key, _pub = generate_keypair(str(tmp_path))
+    log_path = str(tmp_path / "chain.jsonl")
+    log = ChainLog(log_path)
+    for i in range(n):
+        log.append(new_event("tool_call", "s", "bot", "demo", tool={"name": f"t{i}"}))
+    sign_checkpoint(log_path, key)
+    return log_path
+
+
+def _truncate(log_path, keep):
+    lines = open(log_path, encoding="utf-8").read().splitlines()
+    open(log_path, "w", encoding="utf-8").write("\n".join(lines[:keep]) + "\n")
+
+
+def test_verify_detects_truncation_via_adjacent_checkpoints(tmp_path, capsys):
+    """A truncated log is a valid shorter chain; the checkpoint proves otherwise."""
+    log_path = _log_with_checkpoint(tmp_path)
+    assert main(["verify", log_path]) == 0  # honest log passes
+
+    _truncate(log_path, 3)
+    assert main(["verify", log_path]) == 2
+    err = capsys.readouterr().err
+    assert "3 events but a checkpoint attests to 6" in err
+    assert "appears truncated" in err
+
+
+def test_verify_checkpoint_cross_check_can_be_skipped(tmp_path):
+    """Deliberate rotation needs an escape hatch."""
+    log_path = _log_with_checkpoint(tmp_path)
+    _truncate(log_path, 3)
+    assert main(["verify", log_path]) == 2
+    assert main(["verify", log_path, "--skip-checkpoint-check"]) == 0
+
+
+def test_verify_unaffected_when_no_checkpoints_exist(tmp_path):
+    log_path = str(tmp_path / "plain.jsonl")
+    log = ChainLog(log_path)
+    for _ in range(3):
+        log.append(new_event("tool_call", "s", "bot", "demo", tool={"name": "x"}))
+    assert main(["verify", log_path]) == 0
+
+
+def test_report_badge_reflects_checkpoint_contradiction(tmp_path):
+    """A truncated journal must not render a VERIFIED report."""
+    log_path = _log_with_checkpoint(tmp_path)
+    _truncate(log_path, 3)
+    out = tmp_path / "r.html"
+    assert main(["report", log_path, "-o", str(out)]) == 2
+    doc = out.read_text(encoding="utf-8")
+    assert "TAMPERED" in doc
+    assert "VERIFIED 3 events" not in doc
+
+
+def test_verify_detects_rewrite_inside_checkpointed_prefix(tmp_path, capsys):
+    """Same event count, different content within the signed prefix."""
+    log_path = _log_with_checkpoint(tmp_path, n=4)
+    lines = open(log_path, encoding="utf-8").read().splitlines()
+    # Rebuild a same-length but different chain, so the chain itself is valid.
+    import os
+    os.remove(log_path)
+    log = ChainLog(log_path)
+    for i in range(len(lines)):
+        log.append(new_event("tool_call", "s", "bot", "demo", tool={"name": f"forged{i}"}))
+    assert main(["verify", log_path]) == 2
+    assert "appears rewritten" in capsys.readouterr().err

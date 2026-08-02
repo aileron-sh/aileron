@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [0.1.3] — 2026-08-03
+
+### Security
+
+- **`aileron verify` now cross-checks an adjacent `<log>.checkpoints.jsonl`.**
+  Truncating a journal's tail leaves a perfectly valid shorter hash chain, so
+  `verify` reported `OK` even when a signed checkpoint sitting beside the log
+  proved more events had existed. The evidence of tampering was on disk and
+  the tool ignored it — the worst possible answer to give an operator. When a
+  checkpoints file is present, `verify` now compares event count and tip hash
+  against every checkpoint and exits 2 on a contradiction, naming whether the
+  journal appears truncated or rewritten.
+
+  The check is **unauthenticated by design**: `verify` takes no key, so it
+  compares structure rather than verifying signatures. It defeats naive
+  truncation; `verify-checkpoint` with an out-of-band public key remains the
+  cryptographic guarantee, and `verify` now says so in its output.
+- `aileron report` applies the same cross-check, so a truncated journal can no
+  longer render a `VERIFIED` badge.
+- Both commands accept `--skip-checkpoint-check` for deliberate log rotation.
+
+Reported by an external security scan of 0.1.2. No version is affected by a
+new vulnerability; this closes a gap between what the tool could detect and
+what it actually reported.
+
 ## [0.1.2] — 2026-08-02
 
 **Security release. Upgrade from 0.1.1 and 0.1.0.** A follow-up adversarial

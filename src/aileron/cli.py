@@ -28,6 +28,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("verify", help="verify a hash-chained log")
     p.add_argument("log", help="path to chain JSONL log")
+    p.add_argument("--skip-checkpoint-check", action="store_true",
+                   help="do not cross-check an adjacent <log>.checkpoints.jsonl "
+                        "(use when the log was deliberately rotated)")
 
     p = sub.add_parser("sign-checkpoint", help="sign the current log tip")
     p.add_argument("log", help="path to chain JSONL log")
@@ -41,6 +44,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("log", help="path to chain JSONL log")
     p.add_argument("-o", "--out", required=True, help="output HTML path")
     p.add_argument("--title", default="Aileron Incident Report")
+    p.add_argument("--skip-checkpoint-check", action="store_true",
+                   help="do not cross-check an adjacent <log>.checkpoints.jsonl")
 
     p = sub.add_parser("export", help="export events as OTel spans JSON")
     p.add_argument("log", help="path to chain JSONL log")
@@ -109,18 +114,45 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _checkpoint_problems(log_path: str, skip: bool) -> list[str]:
+    """Inconsistencies between a log and its adjacent checkpoints file."""
+    if skip:
+        return []
+    try:
+        from .signing import check_against_checkpoints
+    except ImportError:  # pragma: no cover - cryptography always present
+        return []
+    return check_against_checkpoints(log_path)
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     """Verify hash-chain integrity; exit 2 on tamper."""
     from .chainlog import verify
 
     result = verify(args.log)
-    if result.ok:
-        print(f"OK: {result.count} events verified in {args.log}")
-        return 0
-    for err in result.errors:
-        print(f"error: {err}", file=sys.stderr)
-    print(f"TAMPERED at seq {result.first_bad_seq} in {args.log}", file=sys.stderr)
-    return 2
+    if not result.ok:
+        for err in result.errors:
+            print(f"error: {err}", file=sys.stderr)
+        print(f"TAMPERED at seq {result.first_bad_seq} in {args.log}", file=sys.stderr)
+        return 2
+
+    # An intact chain is not the whole story: truncating the tail leaves a
+    # perfectly valid shorter chain. If a checkpoint next to the log says more
+    # events existed, that is evidence of tampering and must not be reported
+    # as OK.
+    problems = _checkpoint_problems(args.log, args.skip_checkpoint_check)
+    if problems:
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        print(f"TAMPERED: chain is internally valid but contradicts "
+              f"{args.log}.checkpoints.jsonl", file=sys.stderr)
+        print("note: signatures were not checked here — run "
+              "'aileron verify-checkpoint' with the public key you trust.",
+              file=sys.stderr)
+        return 2
+
+    print(f"OK: {result.count} events verified in {args.log}")
+    return 0
 
 
 def _default_key(log_path: str, key: str | None) -> str:
@@ -184,13 +216,26 @@ def _cmd_verify_checkpoint(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
+    import dataclasses
+
     from .chainlog import ChainLog, verify
     from .report import render_html
 
     events = ChainLog.read(args.log)
     result = verify(args.log)
+    # A truncated journal yields a valid shorter chain; if an adjacent
+    # checkpoint contradicts it, the report must not carry a VERIFIED badge.
+    if result.ok:
+        problems = _checkpoint_problems(args.log, args.skip_checkpoint_check)
+        if problems:
+            result = dataclasses.replace(
+                result, ok=False, first_bad_seq=None,
+                errors=list(result.errors) + problems,
+            )
     render_html(events, result, args.out, title=args.title)
-    status = "VERIFIED" if result.ok else f"TAMPERED at seq {result.first_bad_seq}"
+    status = "VERIFIED" if result.ok else "TAMPERED"
+    if not result.ok and result.first_bad_seq is not None:
+        status = f"TAMPERED at seq {result.first_bad_seq}"
     print(f"report written to {args.out} ({len(events)} events, {status})")
     return 0 if result.ok else 2
 
