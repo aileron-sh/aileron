@@ -173,24 +173,30 @@ the extra process hop.
 
 ### Added latency per `tools/call` (milliseconds)
 
-**Linux x86_64** — GitHub Actions `ubuntu-latest`, Python 3.12. Reproduced by
-CI on every push: [![Benchmark](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml/badge.svg)](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml)
+**Linux x86_64** — GitHub Actions `ubuntu-latest` (2 shared vCPU), Python
+3.12.13. Re-measured by CI on every push:
+[![Benchmark](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml/badge.svg)](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml)
 
-| tool arguments | direct (baseline) | + proxy & rules | **added** median | added p95 |
+| tool arguments | direct (baseline) median | + proxy & rules median | **added median** | added p95 |
 |---|---|---|---|---|
-| 64 B | _see CI_ | _see CI_ | _see CI_ | _see CI_ |
+| 64 B | 0.051 | 0.315 | **0.264** | 0.280 |
+| 4 KB | 0.064 | 0.370 | **0.306** | 0.353 |
+| 32 KB | 0.171 | 0.800 | **0.629** | 0.668 |
 
-**macOS arm64** — Apple M2 Pro, Python 3.13.7, idle machine, worst case across
-5 runs:
+**macOS arm64** — Apple M2 Pro, Python 3.13.7, idle machine:
 
-| tool arguments | direct (baseline) median | + proxy & rules median | **added** median | added p95 |
+| tool arguments | direct (baseline) median | + proxy & rules median | **added median** | added p95 |
 |---|---|---|---|---|
-| 64 B | 0.013 | 0.103 | **0.090** | 0.141 |
-| 4 KB | 0.033 | 0.160 | **0.127** | 0.197 |
-| 32 KB | 0.135 | 0.527 | **0.392** | 0.496 |
+| 64 B | 0.0132 | 0.0970 | **0.0837** | 0.126 |
+| 4 KB | 0.0313 | 0.1747 | **0.1435** | 0.183 |
+| 32 KB | 0.1354 | 0.5334 | **0.3980** | 0.512 |
 
-Columns are mean / median / p95 / p99 in the tool's own output; the tables
-above quote median and p95.
+All values are milliseconds. Each table is a **single coherent run**, so
+`added = (proxy & rules) − direct` holds exactly and you can check the
+subtraction. The tool reports mean / median / p95 / p99; these tables quote
+median and p95. Linux is roughly 3× slower than the Mac because a shared-vCPU
+CI runner is the slower machine — those are the conservative numbers, and the
+ones CI enforces.
 
 **Caveats, stated plainly.** These are *sequential* stdio round-trips — one
 call in flight at a time, which is how an agent actually calls tools. This is

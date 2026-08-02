@@ -26,6 +26,28 @@ The suite must stay green. Tests use
 behavior needs a focused test that exercises it; a PR that changes behavior
 without a test will be asked to add one.
 
+## Benchmarking
+
+The proxy sits inline on every tool call, so latency is a correctness-adjacent
+concern. To measure it:
+
+```console
+$ python scripts/benchmark.py
+```
+
+It drives an identical stdio MCP child directly and through `aileron proxy`,
+and reports the delta plus the absolute baseline so the subtraction can be
+checked. CI runs the same script on every push and fails if median overhead
+regresses more than 2× against `scripts/benchmark_baseline.json`.
+
+If a change makes the proxy legitimately slower — a security fix that costs
+latency, for example — re-record the baseline on a CI run and commit it,
+rather than loosening the threshold:
+
+```console
+$ python scripts/benchmark.py --json scripts/benchmark_baseline.json
+```
+
 ## Code style
 
 - `from __future__ import annotations` at the top of every module.
