@@ -1,0 +1,68 @@
+name: Benchmark
+
+# Guards against silent performance decay in the proxy, which sits inline on
+# every tool call. Deliberately tolerant: GitHub runners are shared and noisy,
+# so this fails only on a large (>2x median) regression, not on variance.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      record_baseline:
+        description: "Print results to record as the new baseline"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Proxy overhead (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+
+      - name: Measure proxy overhead
+        run: |
+          set -o pipefail
+          if [ -f scripts/benchmark_baseline.json ]; then
+            python scripts/benchmark.py \
+              --calls 2000 \
+              --json benchmark-results.json \
+              --baseline scripts/benchmark_baseline.json \
+              --max-regression 2.0 \
+              | tee benchmark-output.txt
+          else
+            echo "No baseline committed yet — recording only, nothing to compare."
+            python scripts/benchmark.py \
+              --calls 2000 \
+              --json benchmark-results.json \
+              | tee benchmark-output.txt
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Proxy overhead (Linux x86_64)'
+            echo '```'
+            cat benchmark-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: |
+            benchmark-results.json
+            benchmark-output.txt

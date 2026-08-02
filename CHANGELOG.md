@@ -130,11 +130,11 @@ policy-enforcement bypass: the MCP proxy failed *open*.
 - The proxy read one byte at a time, costing a syscall per byte. Reading
   line-wise cuts overhead ~11x on 32 KB tool calls (2.16 ms → 0.19 ms).
   Measured overhead is now 0.08 ms (p50) at 64 B and 0.33 ms at 32 KB; see
-  `benchmarks/bench_proxy.py`, which is reproducible on any machine.
+  `scripts/benchmark.py`, which is reproducible on any machine.
 
 ### Added
 
-- `benchmarks/bench_proxy.py` — measures proxy overhead against an
+- `scripts/benchmark.py` — measures proxy overhead against an
   identical child with no proxy in the path, and reports the delta.
 - 12 security regression tests covering every issue above (112 total).
 

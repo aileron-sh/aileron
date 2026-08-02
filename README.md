@@ -100,20 +100,8 @@ $ aileron proxy --log run.chain.jsonl --rules rules -- \
 A blocked call returns a JSON-RPC error (`-32000: blocked by aileron rule
 <id>`) to the client; the child is never invoked.
 
-**Measured overhead** (`python benchmarks/bench_proxy.py`, Python 3.13 /
-Apple M2 Pro; worst case across 5 runs of 2,000 sequential calls on an idle
-machine) — the added round-trip latency per `tools/call` with rules loaded,
-including JSON-RPC parsing, policy evaluation, hash-chain append,
-re-serialization, and the extra process hop:
-
-| tool arguments | p50 | p95 |
-|---|---|---|
-| 64 B | 0.09 ms | 0.15 ms |
-| 4 KB | 0.13 ms | 0.20 ms |
-| 32 KB | 0.40 ms | 0.50 ms |
-
-Run it on your own hardware before quoting a number. For context, a real MCP
-server call is typically 10–1000 ms, so mediation costs well under 1% of it.
+Mediation costs **sub-millisecond median overhead per `tools/call`, verified
+on commodity hardware** — see [Performance](#performance).
 
 The proxy speaks both newline-delimited and `Content-Length`-framed
 JSON-RPC. Content rules
@@ -164,6 +152,57 @@ Tampering with any event breaks the hash link at the first modified
 sequence; `verify` reports `first_bad_seq` and exits non-zero. The journal
 is local-only and self-contained — verification needs no network and no
 trusted third party.
+
+## Performance
+
+Aileron adds **sub-millisecond median overhead per `tools/call`, verified on
+commodity hardware.** Every number below is reproducible with one command:
+
+```console
+$ python scripts/benchmark.py
+```
+
+**Method.** [`scripts/benchmark.py`](scripts/benchmark.py) drives an identical
+stdio MCP child server two ways — directly, and through `aileron proxy` — and
+subtracts. The delta is the proxy's true cost, so you never have to trust an
+absolute figure. The absolute baseline is printed alongside it so the
+subtraction can be checked. 2,000 sequential calls per configuration after 200
+discarded warmup calls; rules loaded; digest-only journaling. Overhead covers
+JSON-RPC parsing, policy evaluation, hash-chain append, re-serialization, and
+the extra process hop.
+
+### Added latency per `tools/call` (milliseconds)
+
+**Linux x86_64** — GitHub Actions `ubuntu-latest`, Python 3.12. Reproduced by
+CI on every push: [![Benchmark](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml/badge.svg)](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml)
+
+| tool arguments | direct (baseline) | + proxy & rules | **added** median | added p95 |
+|---|---|---|---|---|
+| 64 B | _see CI_ | _see CI_ | _see CI_ | _see CI_ |
+
+**macOS arm64** — Apple M2 Pro, Python 3.13.7, idle machine, worst case across
+5 runs:
+
+| tool arguments | direct (baseline) median | + proxy & rules median | **added** median | added p95 |
+|---|---|---|---|---|
+| 64 B | 0.013 | 0.103 | **0.090** | 0.141 |
+| 4 KB | 0.033 | 0.160 | **0.127** | 0.197 |
+| 32 KB | 0.135 | 0.527 | **0.392** | 0.496 |
+
+Columns are mean / median / p95 / p99 in the tool's own output; the tables
+above quote median and p95.
+
+**Caveats, stated plainly.** These are *sequential* stdio round-trips — one
+call in flight at a time, which is how an agent actually calls tools. This is
+not a concurrent-client benchmark; a many-client run is on the roadmap.
+Overhead grows with argument size because hashing, digesting, and
+re-serialization are all linear in payload. For context, a real MCP server
+call is typically 10–1000 ms, so mediation costs well under 1% of it. Measure
+on your own hardware before quoting a number.
+
+CI enforces this: a job fails if median overhead regresses more than 2× against
+[`scripts/benchmark_baseline.json`](scripts/benchmark_baseline.json), so
+performance cannot decay silently.
 
 ## Integrations & ecosystem
 
