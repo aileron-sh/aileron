@@ -34,22 +34,22 @@ def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
     if not first:
         return None
     if first in (b"{", b"["):
-        # Newline-delimited JSON.
-        buf = bytearray(first)
-        while True:
-            ch = stream.read(1)
-            if not ch or ch == b"\n":
-                break
-            buf += ch
-        payload = bytes(buf)
+        # Newline-delimited JSON. readline() reads the remainder of the line in
+        # one buffered call; a byte-at-a-time loop here costs one syscall per
+        # byte and dominates latency on large tool arguments.
+        rest = stream.readline()
+        if rest.endswith(b"\n"):
+            rest = rest[:-1]  # drop the delimiter, keep any \r (as before)
+        payload = bytes(first + rest)
         return payload, payload + b"\n"
-    # Content-Length (or similar header) framed message.
+    # Content-Length (or similar header) framed message. Headers are
+    # line-oriented, so read them a line at a time rather than a byte at a time.
     headers = bytearray(first)
     while True:
-        ch = stream.read(1)
-        if not ch:
+        line = stream.readline()
+        if not line:
             return None
-        headers += ch
+        headers += line
         if headers.endswith(b"\r\n\r\n") or headers.endswith(b"\n\n"):
             break
     # Reject ambiguous framing: a duplicate or non-numeric Content-Length lets

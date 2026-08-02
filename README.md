@@ -98,8 +98,24 @@ $ aileron proxy --log run.chain.jsonl --rules rules -- \
 ```
 
 A blocked call returns a JSON-RPC error (`-32000: blocked by aileron rule
-<id>`) to the client; the child is never invoked. The proxy speaks both
-newline-delimited and `Content-Length`-framed JSON-RPC. Content rules
+<id>`) to the client; the child is never invoked.
+
+**Measured overhead** (`python benchmarks/bench_proxy.py`, 2,000 sequential
+calls, Python 3.13 / Apple Silicon) — the added round-trip latency per
+`tools/call`, including JSON-RPC parsing, policy evaluation, hash-chain
+append, and the extra process hop:
+
+| tool arguments | p50 | p95 |
+|---|---|---|
+| 64 B | 0.07 ms | 0.09 ms |
+| 4 KB | 0.11 ms | 0.15 ms |
+| 32 KB | 0.31 ms | 0.45 ms |
+
+Run it on your own hardware before quoting a number. For context, a real MCP
+server call is typically 10–1000 ms, so mediation costs well under 1% of it.
+
+The proxy speaks both newline-delimited and `Content-Length`-framed
+JSON-RPC. Content rules
 (`tool.arguments_contains`, `_regex`) work in the default digest-only mode —
 `--capture-content` changes what is persisted, not what is enforced. Calls
 still in flight when the child dies are journaled with `status=error`, so a
