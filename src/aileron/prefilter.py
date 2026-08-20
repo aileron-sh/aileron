@@ -153,7 +153,11 @@ def _both(left: tuple | None, right: tuple | None) -> tuple | None:
     combined = []
     for first in left:
         for second in right:
-            combined.append(_trim(first + second))
+            # Most selective clause first. Rejecting a conjunction only needs
+            # one clause to come up empty, so testing the discriminating one
+            # first usually costs a single substring scan instead of several.
+            combined.append(_trim(tuple(sorted(
+                first + second, key=_clause_rank, reverse=True))))
             if len(combined) > _MAX_CONJUNCTIONS:
                 # Too wide to carry. Weaken both sides to one clause each and
                 # keep the conjunction, which is still better than either alone.

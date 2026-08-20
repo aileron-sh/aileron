@@ -147,7 +147,23 @@ def _clause_matches(
         if not found:
             return False
         needles = clause_value if isinstance(clause_value, list) else [clause_value]
-        return any(isinstance(n, str) and n.lower() in hay for n in needles)
+        # Rules share needles, and a scan of a large payload is not free, so
+        # look each one up once per event rather than once per rule.
+        seen = cache.setdefault(("needles", path), {}) if cache is not None else None
+        for needle in needles:
+            if not isinstance(needle, str):
+                continue
+            if seen is None:
+                if needle.lower() in hay:
+                    return True
+                continue
+            hit = seen.get(needle)
+            if hit is None:
+                hit = needle.lower() in hay
+                seen[needle] = hit
+            if hit:
+                return True
+        return False
 
     if key.endswith(_REGEX_SUFFIX):
         if not isinstance(clause_value, str):
