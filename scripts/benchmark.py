@@ -162,6 +162,20 @@ def _check_regression(document: dict, baseline_path: str, factor: float) -> int:
     baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
     by_size = {r["payload_bytes"]: r for r in baseline["results"]}
     print(f"\nregression check vs {baseline_path} (allowed: {factor}x median)")
+
+    # Rule-pack size is part of the workload, not of the code. Comparing a
+    # 32-rule run against a 2-rule baseline reports a code regression that is
+    # not there, which is exactly what happened once. Say so plainly. This
+    # still fails the run: a bigger pack is a real cost users pay, and it must
+    # be re-recorded deliberately rather than waved through, or a genuine
+    # regression could hide behind a rules bump.
+    was_rules = baseline.get("meta", {}).get("rules")
+    now_rules = document.get("meta", {}).get("rules")
+    if was_rules is not None and now_rules is not None and was_rules != now_rules:
+        print(f"  note: the bundled rule pack changed, {was_rules} rules -> "
+              f"{now_rules}. Content rules are\n        matched against the whole "
+              "payload, so cost scales with pack size as well as\n        payload "
+              "size. Any difference below is workload, not necessarily code.")
     print(f"{'payload':>10}{'baseline':>12}{'current':>12}{'ratio':>9}   verdict")
     failed = False
     for result in document["results"]:
@@ -216,10 +230,12 @@ def main(argv: list[str] | None = None) -> int:
         "calls_per_config": args.calls,
         "warmup": args.warmup,
         "mode": "sequential stdio",
+        "rules": len(list(Path(rules_dir).glob("*.yml"))),
     }
     print(f"aileron {meta['aileron']} | Python {meta['python']} | {meta['platform']}")
     print(f"{args.calls} sequential tools/call per configuration, "
           f"{args.warmup} warmup discarded")
+    print(f"{meta['rules']} bundled rules loaded for the '+ rules' configuration")
 
     results = [measure(size, args.calls, args.warmup, rules_dir) for size in sizes]
     for result in results:

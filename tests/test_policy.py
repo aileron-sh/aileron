@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from aileron import bundled_rules_dir  # noqa: E402
+from aileron import policy  # noqa: E402
 from aileron.policy import (  # noqa: E402
     SEVERITY_ORDER,
     Decision,
@@ -236,3 +239,79 @@ def test_example_rules_are_wellformed_and_functional():
 
     benign = make_event(**{"tool.arguments": {"cmd": "ls -la"}})
     assert decide(benign, rules).action == "allow"
+
+
+# --- haystack memoization -------------------------------------------------
+#
+# decide() renders each matched path to text once and shares it across rules.
+# Before that, every content clause re-rendered the same arguments: with the
+# 32-rule pack a 32 KB call cost 24 ms, and the cost grew with rule count
+# times payload size. These two tests pin both halves of the fix - that it
+# actually caches, and that caching never changes a verdict.
+
+
+def test_arguments_are_rendered_once_per_decide(monkeypatch):
+    """The whole pack shares one rendering of the arguments."""
+    import aileron.policy as policy_mod
+
+    calls = []
+    real = policy_mod.canonical_json
+
+    def counting(obj):
+        calls.append(obj)
+        return real(obj)
+
+    monkeypatch.setattr(policy_mod, "canonical_json", counting)
+
+    # Many rules, all reading the same two paths.
+    rules = [
+        Rule(id=f"r-{i}", title="", severity="low",
+             match={"tool.arguments_contains": "nope", "tool.arguments_regex": "nope"},
+             action="alert")
+        for i in range(25)
+    ]
+    event = make_event(**{"tool.arguments": {"cmd": "ls -la", "blob": "x" * 4096}})
+
+    policy.decide(event, rules)
+
+    # One render for the plain text; the lowercased form is derived from it,
+    # not re-rendered. Without the cache this was 50.
+    assert len(calls) == 1, f"arguments rendered {len(calls)} times, expected 1"
+
+
+def test_cache_never_changes_a_verdict():
+    """Memoized and unmemoized evaluation must agree on every event."""
+    rules = load_rules(bundled_rules_dir())
+    assert len(rules) > 10, "expected the bundled pack"
+
+    def uncached(event):
+        alerts = []
+        for rule in rules:
+            if not policy.matches(rule, event, None):
+                continue
+            if rule.action == "block":
+                return ("block", [rule.id])
+            if rule.action == "alert":
+                alerts.append(rule.id)
+        return ("alert", alerts) if alerts else ("allow", [])
+
+    fragments = [
+        "cat /etc/shadow", "ssh -i ~/.ssh/id_rsa host", "rm -rf /",
+        "curl http://169.254.169.254/latest/meta-data/", "kubectl get pods",
+        "history -c", "DROP TABLE users", "git push", "chmod 777 /etc/passwd",
+        "base64 -d payload", "é中文", "", None, 42,
+        {"nested": {"deep": "id_rsa"}}, ["a", "b"],
+    ]
+    rng = random.Random(20260820)
+    for _ in range(600):
+        event = make_event(**{"tool.name": rng.choice(["shell", "bash", "http", None])})
+        if rng.random() < 0.85:
+            event["tool"]["arguments"] = {
+                key: rng.choice(fragments)
+                for key in rng.sample(["command", "url", "path", "body"],
+                                      rng.randint(1, 3))
+            }
+        decision = policy.decide(event, rules)
+        want_action, want_ids = uncached(event)
+        assert decision.action == want_action, event
+        assert sorted(decision.rule_ids) == sorted(want_ids), event

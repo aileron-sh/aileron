@@ -74,14 +74,59 @@ def _lookup(event: dict, dotted_key: str) -> tuple[bool, object]:
     return True, current
 
 
-def _haystack(value: object) -> str:
-    """Text to run substring/regex clauses against."""
-    if isinstance(value, str):
-        return value
-    return canonical_json(value)
+def _haystack(
+    event: dict,
+    path: str,
+    cache: dict | None,
+    *,
+    lower: bool = False,
+) -> tuple[bool, str]:
+    """Resolve a dotted path and render it as searchable text, memoized.
+
+    Returns (found, text); found is False when the path is missing or None,
+    in which case the text is empty and no clause should match.
+
+    The cache is why this takes an event and a path rather than a value. A
+    rule pack asks the same few paths over and over - 41 clauses across the
+    32 bundled rules match on tool arguments - and rendering an arguments
+    dict to canonical JSON is proportional to its size. Doing that once per
+    rule made proxy overhead scale with rule count times payload size: 24 ms
+    on a 32 KB call, against 0.6 ms when only two rules shipped. Rendering
+    once per distinct path drops the rule count out of the cost entirely.
+
+    The cache is created per decide() call and never outlives the event it
+    describes, so it cannot serve one event's text for another. Callers may
+    pass None, which simply computes every time.
+    """
+    key = (path, lower)
+    if cache is not None:
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+
+    if lower:
+        found, text = _haystack(event, path, cache)
+        entry = (found, text.lower())
+    else:
+        found, value = _lookup(event, path)
+        if not found or value is None:
+            entry = (False, "")
+        elif isinstance(value, str):
+            entry = (True, value)
+        else:
+            entry = (True, canonical_json(value))
+
+    if cache is not None:
+        cache[key] = entry
+    return entry
 
 
-def _clause_matches(key: str, clause_value: object, event: dict) -> bool:
+def _clause_matches(
+    key: str,
+    clause_value: object,
+    event: dict,
+    cache: dict | None = None,
+) -> bool:
     """Evaluate one match clause against the event."""
     if key == _SEVERITY_GTE:
         found, value = _lookup(event, "severity")
@@ -92,19 +137,22 @@ def _clause_matches(key: str, clause_value: object, event: dict) -> bool:
         return SEVERITY_ORDER.index(value) >= SEVERITY_ORDER.index(clause_value)
 
     if key.endswith(_CONTAINS_SUFFIX):
-        found, value = _lookup(event, key[: -len(_CONTAINS_SUFFIX)])
-        if not found or value is None:
+        path = key[: -len(_CONTAINS_SUFFIX)]
+        found, hay = _haystack(event, path, cache, lower=True)
+        if not found:
             return False
         needles = clause_value if isinstance(clause_value, list) else [clause_value]
-        hay = _haystack(value).lower()
         return any(isinstance(n, str) and n.lower() in hay for n in needles)
 
     if key.endswith(_REGEX_SUFFIX):
-        found, value = _lookup(event, key[: -len(_REGEX_SUFFIX)])
-        if not found or value is None or not isinstance(clause_value, str):
+        if not isinstance(clause_value, str):
+            return False
+        path = key[: -len(_REGEX_SUFFIX)]
+        found, hay = _haystack(event, path, cache)
+        if not found:
             return False
         try:
-            return re.search(clause_value, _haystack(value)) is not None
+            return re.search(clause_value, hay) is not None
         except re.error:
             return False
 
@@ -114,11 +162,17 @@ def _clause_matches(key: str, clause_value: object, event: dict) -> bool:
     return value == clause_value
 
 
-def matches(rule: Rule, event: dict) -> bool:
-    """Return True when every clause of the rule matches the event (AND)."""
+def matches(rule: Rule, event: dict, cache: dict | None = None) -> bool:
+    """Return True when every clause of the rule matches the event (AND).
+
+    ``cache`` is an optional per-event memo shared across rules; see
+    ``_haystack``. It is purely an optimization and never changes a verdict.
+    """
     if not rule.match:
         return False
-    return all(_clause_matches(key, value, event) for key, value in rule.match.items())
+    return all(
+        _clause_matches(key, value, event, cache) for key, value in rule.match.items()
+    )
 
 
 def decide(event: dict, rules: list[Rule]) -> Decision:
@@ -129,8 +183,11 @@ def decide(event: dict, rules: list[Rule]) -> Decision:
     any). Default is 'allow'.
     """
     alert_ids: list[str] = []
+    # Shared across every rule in this call, discarded when it returns. Without
+    # it, each rule re-renders the same arguments to text.
+    cache: dict = {}
     for rule in rules:
-        if not matches(rule, event):
+        if not matches(rule, event, cache):
             continue
         if rule.action == "block":
             return Decision(action="block", rule_ids=[rule.id])
