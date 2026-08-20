@@ -51,6 +51,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("log", help="path to chain JSONL log")
     p.add_argument("-o", "--out", required=True, help="output JSON path")
 
+    p = sub.add_parser("serve", help="read-only MCP server over your journals")
+    p.add_argument("--root", default=".",
+                   help="directory holding journals to serve (default: .)")
+
     p = sub.add_parser("detect", help="replay a log through the behavioral baseline")
     p.add_argument("log", help="path to chain JSONL log")
     p.add_argument("--state", default=None,
@@ -250,6 +254,13 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Expose the journals under --root as a read-only MCP server."""
+    from .mcpserver import serve
+
+    return serve(args.root)
+
+
 def _cmd_detect(args: argparse.Namespace) -> int:
     """Replay a recorded log through the behavioral baseline; print flags."""
     from .chainlog import ChainLog
@@ -430,6 +441,7 @@ _DISPATCH = {
     "report": _cmd_report,
     "export": _cmd_export,
     "detect": _cmd_detect,
+    "serve": _cmd_serve,
     "proxy": _cmd_proxy,
     "demo": _cmd_demo,
 }

@@ -144,6 +144,7 @@ aileron sign-checkpoint <log> [--key path]
 aileron verify-checkpoint <log> [--key path]
 aileron report <log> -o out.html
 aileron export <log> -o spans.json
+aileron serve [--root .]        # read-only MCP server over journals in --root
 aileron detect <log> [--state s.json] [--save]  # replay log through Baseline; prints flags per event
 aileron rules test <rules_path> <log>  # dry-run: prints Decision per event
 aileron proxy --log <path> [--rules <dir>] [--capture-content] -- <cmd...>

@@ -118,6 +118,25 @@ JSON-RPC. Content rules
 still in flight when the child dies are journaled with `status=error`, so a
 crash never erases the attempt.
 
+### MCP server: ask your assistant what the agent did
+
+Aileron sits in front of MCP servers. It is also one. Point it at a directory
+of journals and an assistant can read the record for you:
+
+```console
+$ aileron serve --root ./journals
+```
+
+Three tools, all read only: `verify_journal` (is this record intact),
+`query_events` (what happened, filtered by tool, status, or time), and
+`explain_rule` (what does aileron-130 catch).
+
+There is no write, delete, or sign tool, and there should never be. The agent
+being recorded is the untrusted party, so giving it a way to edit the journal
+would hand the suspect the evidence locker. Paths are confined to `--root`,
+only `.jsonl` files can be opened, and errors never echo file contents, so this
+cannot be used as a general file reader.
+
 ### Policy rules
 
 ```yaml
