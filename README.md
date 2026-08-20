@@ -36,6 +36,7 @@ demo: 2 anomaly alert(s) emitted
 $ aileron verify demo.chain.jsonl
 OK: 8 events verified in demo.chain.jsonl
 $ aileron report demo.chain.jsonl -o incident.html   # open it in a browser
+$ aileron serve --root .                             # or ask an assistant instead
 ```
 
 The demo runs in the default digest-only mode: the destructive shell call is
@@ -50,7 +51,8 @@ journal on disk contains only argument digests - never the raw command.
 | Signed checkpoints | Ed25519 signature over the chain tip, verifiable offline against the public key (`aileron sign-checkpoint` / `verify-checkpoint`). Checkpoints cover a *prefix*: appending later events never invalidates them; truncating or rewriting the signed prefix does |
 | Policy rules | **32 bundled rules** covering credential theft, cloud metadata abuse, exfiltration, supply chain, persistence, anti-forensics, database destruction, and prompt-injection artifacts. Sigma-like YAML; substring, regex, and dotted-key matchers. Rules are evaluated against the full call **in memory**, so content rules fire even in digest-only mode |
 | Behavioral anomaly detection | Rolling baselines flag first-seen tools, rate spikes (>3x baseline), and novel tool-call sequences - live via the SDK (`baseline=`) or offline via `aileron detect` |
-| MCP stdio proxy | Sits between any MCP client and server; logs and mediates every `tools/call` before it reaches the child process |
+| MCP stdio proxy | Sits between any MCP client and server; logs and mediates every `tools/call` before it reaches the child process. Verified against the official filesystem and memory servers, not just test doubles |
+| MCP server mode | `aileron serve` exposes your journals read-only, so an assistant can answer "what did the agent touch?" from the record. Listed in the [official MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.aileron-sh/aileron` |
 | OTel GenAI export | Events export as `gen_ai.*`-aligned span dicts (`aileron export`) for your existing collector |
 | HTML incident reports | Single file, inline CSS, no external assets, verification badge (`VERIFIED` / `TAMPERED at seq N`) |
 | Privacy by default | Tool arguments/results are recorded as digests only, unless you opt in with `--capture-content` |
