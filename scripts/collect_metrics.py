@@ -241,11 +241,23 @@ def main(argv=None) -> int:
         print("\n(dry run — nothing written)")
         return 0
 
+    # Traffic is the only field that cannot be recovered later. If it failed,
+    # say so loudly rather than banking a snapshot with a hole in it.
+    traffic_failed = isinstance(s.get("traffic"), dict) and "error" in s["traffic"]
+    if traffic_failed:
+        print("\n  WARNING: traffic collection failed — views/clones for today are\n"
+              "  unrecoverable after 14 days. The Actions GITHUB_TOKEN cannot read\n"
+              "  traffic endpoints; set a METRICS_TOKEN secret (see metrics/README.md)\n"
+              "  or run this locally with GITHUB_TOKEN=$(gh auth token).",
+              file=sys.stderr)
+
     HISTORY.parent.mkdir(parents=True, exist_ok=True)
     with HISTORY.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(s, sort_keys=True, separators=(",", ":")) + "\n")
     total = sum(1 for _ in HISTORY.open(encoding="utf-8"))
     print(f"\nappended to {HISTORY} ({total} snapshot(s) recorded)")
+    if traffic_failed and os.environ.get("REQUIRE_TRAFFIC"):
+        return 1  # snapshot is still recorded; the job is marked failed
     return 0
 
 

@@ -32,7 +32,12 @@ jobs:
 
       - name: Collect
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The traffic endpoints (views/clones — the only data that expires)
+          # require a user token with repo scope. The Actions GITHUB_TOKEN
+          # cannot reach them at any permission level, so METRICS_TOKEN is what
+          # makes this job worth running. See metrics/README.md for setup.
+          GITHUB_TOKEN: ${{ secrets.METRICS_TOKEN || secrets.GITHUB_TOKEN }}
+          REQUIRE_TRAFFIC: "1"
         run: python scripts/collect_metrics.py
 
       - name: Summary

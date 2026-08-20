@@ -47,6 +47,31 @@ project is worth less than one that can be trusted.
 - Nothing here is de-duplicated across time. Each row is what the APIs said on
   that date.
 
+## Required setup: `METRICS_TOKEN`
+
+**The scheduled job cannot collect traffic without this.** GitHub's traffic
+endpoints require a *user* token with `repo` scope; the Actions
+`GITHUB_TOKEN` is refused with HTTP 403 at every permission level. Traffic is
+also the only field that expires, so this is the one piece of setup that
+actually matters.
+
+1. Create a token — either a classic PAT with `repo` scope, or a fine-grained
+   token limited to this repository with **Administration: Read** and
+   **Contents: Read**.
+2. Add it to the repository as a secret named `METRICS_TOKEN`
+   (Settings → Secrets and variables → Actions → New repository secret).
+
+The workflow falls back to `GITHUB_TOKEN` when the secret is absent, which
+collects everything *except* traffic and marks the run failed so the gap is
+visible rather than silent.
+
+Until the secret exists, capture traffic by hand — this works today and
+backfills the last 14 days:
+
+```console
+$ GITHUB_TOKEN=$(gh auth token) python scripts/collect_metrics.py
+```
+
 ## Usage
 
 ```console
