@@ -37,7 +37,7 @@ try:  # pragma: no cover - the fallback is for Python 3.10
 except ImportError:  # pragma: no cover
     import sre_parse as _sre_parse  # type: ignore[no-redef]
 
-__all__ = ["fold", "required_literals"]
+__all__ = ["can_skip", "fold", "required_literals", "requirement"]
 
 # Literals shorter than this are not worth a prefilter. "rm" appears in
 # ordinary text constantly, so a rule reduced to it would run its regex almost
@@ -91,21 +91,107 @@ def fold(text: str) -> str:
     return text.translate(_FOLD_REPAIRS).casefold()
 
 
-def _most_selective(options: list[frozenset[str]]) -> frozenset[str] | None:
-    """Pick one requirement to use out of several that all hold.
+# How a requirement is shaped.
+#
+# The simplest useful answer to "what must a payload contain" is a set of
+# literals, any one of which will do. That is not selective enough on real
+# text. Rule aileron-162 has a branch needing (systemctl|service) followed by
+# (stop|disable|mask), and "service" is an ordinary English word, so any prose
+# containing it paid for a full scan of the payload.
+#
+# So a requirement is written in disjunctive normal form:
+#
+#   clause      frozenset of literals, at least one must be present
+#   conjunction tuple of clauses, all of them must be satisfied
+#   requirement tuple of conjunctions, at least one must be satisfied
+#
+# A pattern can only match if some conjunction is fully satisfied, so the
+# payload can be rejected when every conjunction has at least one clause with
+# nothing present. For that rule, prose with "service" but no "stop", "disable"
+# or "mask" is now rejected without running the regex.
+#
+# Both bounds below exist so a pathological rule cannot make this expensive.
+# Crossing either weakens the requirement rather than abandoning it, and
+# weakening is always the safe direction: it can only cause a regex to run.
+_MAX_CONJUNCTIONS = 24  # how wide the disjunction may get
+_MAX_CLAUSES = 4  # how many clauses one conjunction may carry
 
-    In a sequence every part has to match, so any part's requirement is a valid
-    requirement for the whole. They are all correct, so take the one that will
-    reject the most payloads, which is the one whose weakest literal is longest.
+
+def _clause_rank(clause: frozenset[str]) -> int:
+    """How selective a clause is. Longer worst-case literal is better."""
+    return min(len(literal) for literal in clause)
+
+
+def _trim(conjunction: tuple) -> tuple:
+    """Keep the most selective clauses. Dropping a clause only weakens."""
+    if len(conjunction) <= _MAX_CLAUSES:
+        return conjunction
+    return tuple(sorted(conjunction, key=_clause_rank, reverse=True)[:_MAX_CLAUSES])
+
+
+def _collapse(requirement: tuple) -> tuple:
+    """Weaken a requirement to a single clause.
+
+    Take the most selective clause out of each conjunction and union them. If
+    some conjunction held, its representative clause held, so the union holds.
+    That is the old one-set-per-pattern behaviour, used as an overflow valve.
     """
-    usable = [option for option in options if option]
-    if not usable:
+    picks = [max(conjunction, key=_clause_rank) for conjunction in requirement]
+    return ((frozenset().union(*picks),),)
+
+
+def _both(left: tuple | None, right: tuple | None) -> tuple | None:
+    """Requirement for two fragments that must both match.
+
+    None means "no constraint", which is the identity here: something we could
+    not read tells us nothing, so the other side stands on its own.
+    """
+    if left is None:
+        return right
+    if right is None:
+        return left
+    combined = []
+    for first in left:
+        for second in right:
+            combined.append(_trim(first + second))
+            if len(combined) > _MAX_CONJUNCTIONS:
+                # Too wide to carry. Weaken both sides to one clause each and
+                # keep the conjunction, which is still better than either alone.
+                return (_trim(_collapse(left)[0] + _collapse(right)[0]),)
+    return tuple(combined)
+
+
+def _either(options: list) -> tuple | None:
+    """Requirement for an alternation.
+
+    Only one branch has to match, so a branch we cannot read means the
+    alternation requires nothing at all.
+    """
+    if any(option is None for option in options):
         return None
-    return max(usable, key=lambda option: min(len(literal) for literal in option))
+    merged: tuple = ()
+    for option in options:
+        merged += option
+    if not merged:
+        return None
+
+    # "(systemctl|service)" arrives here as two alternatives that each require
+    # one literal. That is exactly what a clause is, so fold them into one
+    # rather than carrying two alternatives forward. Without this the products
+    # multiply: a branch needing three such groups in a row would become 24
+    # alternatives and blow the cap, which is what used to make rule
+    # aileron-162 fall back to a single loose union and scan any prose
+    # containing the word "service".
+    if all(len(conjunction) == 1 for conjunction in merged):
+        return ((frozenset().union(*(c[0] for c in merged)),),)
+
+    if len(merged) > _MAX_CONJUNCTIONS:
+        return _collapse(merged)
+    return merged
 
 
-def _required(node, depth: int = 0) -> frozenset[str] | None:
-    """Literals that any string matching this parsed fragment must contain.
+def _required(node, depth: int = 0) -> tuple | None:
+    """What any string matching this parsed fragment must contain.
 
     Returns None for "nothing can be required here", which is the safe answer
     and the one every unrecognised construct gets.
@@ -113,19 +199,20 @@ def _required(node, depth: int = 0) -> frozenset[str] | None:
     if depth > 20:  # deeply nested rule, not worth reasoning about
         return None
 
-    found: list[frozenset[str]] = []
+    result: tuple | None = None
     run: list[str] = []
 
-    def flush_run() -> None:
+    def flush_run() -> tuple | None:
         """Turn a run of adjacent plain characters into one required literal."""
         if not run:
-            return
+            return None
         literal = "".join(run)
         run.clear()
         # Non-ASCII literals would need their own folding argument, and no
         # bundled rule uses one, so they are simply not prefiltered.
         if literal.isascii() and len(literal) >= MIN_LITERAL:
-            found.append(frozenset({fold(literal)}))
+            return ((frozenset({fold(literal)}),),)
+        return None
 
     for op, argument in node:
         name = str(op)
@@ -133,39 +220,28 @@ def _required(node, depth: int = 0) -> frozenset[str] | None:
         if name == "LITERAL":
             run.append(chr(argument))
             continue
-        flush_run()
+        result = _both(result, flush_run())
 
         if name == "BRANCH":
-            # Alternation. Only one branch has to match, so a literal is only
-            # required if EVERY branch requires one, and then the requirement
-            # is the union. If any branch is unconstrained the alternation as a
-            # whole requires nothing.
-            branches = [_required(branch, depth + 1) for branch in argument[1]]
-            if all(branch for branch in branches):
-                found.append(frozenset().union(*branches))
+            result = _both(result, _either(
+                [_required(branch, depth + 1) for branch in argument[1]]))
 
         elif name == "SUBPATTERN":
             # A plain group. Inline flag changes such as (?i:...) are fine to
             # ignore: fold() already compares case-insensitively, so a group
             # turning case sensitivity on only makes the real pattern stricter
             # than the prefilter, never looser.
-            inner = _required(argument[3], depth + 1)
-            if inner:
-                found.append(inner)
+            result = _both(result, _required(argument[3], depth + 1))
 
         elif name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
             # Required only when the fragment has to appear at least once.
             # "x{0,30}" and "x?" can match nothing, so they require nothing.
             minimum, _maximum, inner_node = argument
             if minimum >= 1:
-                inner = _required(inner_node, depth + 1)
-                if inner:
-                    found.append(inner)
+                result = _both(result, _required(inner_node, depth + 1))
 
         elif name == "ATOMIC_GROUP":
-            inner = _required(argument, depth + 1)
-            if inner:
-                found.append(inner)
+            result = _both(result, _required(argument, depth + 1))
 
         # Everything else contributes nothing, on purpose:
         #   IN, ANY, NOT_LITERAL, CATEGORY   match a character we cannot name
@@ -175,17 +251,11 @@ def _required(node, depth: int = 0) -> frozenset[str] | None:
         #                                    positive ones are not worth the risk
         #   GROUPREF, GROUPREF_EXISTS        depend on what matched elsewhere
 
-    flush_run()
-    return _most_selective(found)
+    return _both(result, flush_run())
 
 
-def required_literals(pattern: str) -> frozenset[str] | None:
-    """Literals a payload must contain for ``pattern`` to have any chance.
-
-    Returns None when no useful requirement could be proven, meaning the caller
-    must run the regex as before. Never raises, whatever it is handed, because
-    a crash on the enforcement path is worse than a slow one.
-    """
+def requirement(pattern: str) -> tuple | None:
+    """Cached disjunctive-normal-form requirement for a pattern."""
     if not isinstance(pattern, str):
         return None
 
@@ -193,7 +263,7 @@ def required_literals(pattern: str) -> frozenset[str] | None:
     if cached is not False:
         return cached  # type: ignore[return-value]
 
-    result: frozenset[str] | None
+    result: tuple | None
     try:
         re.compile(pattern)  # a pattern that cannot compile never matches
         result = _required(_sre_parse.parse(pattern))
@@ -203,6 +273,19 @@ def required_literals(pattern: str) -> frozenset[str] | None:
     if len(_CACHE) < _MAX_CACHED:
         _CACHE[pattern] = result
     return result
+
+
+def required_literals(pattern: str) -> frozenset[str] | None:
+    """Literals a payload must contain for ``pattern`` to have any chance.
+
+    This is the weakened, one-set view of :func:`requirement`, kept because it
+    is the easiest form to reason about and to test. Returns None when nothing
+    could be proven.
+    """
+    found = requirement(pattern)
+    if found is None:
+        return None
+    return _collapse(found)[0][0]
 
 
 # An operator who suspects the prefilter during an investigation should be able
@@ -221,18 +304,20 @@ def can_skip(pattern: str, folded_haystack: str, seen: dict | None = None) -> bo
     """
     if DISABLED:
         return False
-    literals = required_literals(pattern)
-    if literals is None:
+    found = requirement(pattern)
+    if found is None:
         return False  # nothing proven, so the regex has to run
 
-    for literal in literals:
+    def present(literal: str) -> bool:
         if seen is None:
-            present = literal in folded_haystack
-        else:
-            present = seen.get(literal)
-            if present is None:
-                present = literal in folded_haystack
-                seen[literal] = present
-        if present:
-            return False  # might match, run the regex
+            return literal in folded_haystack
+        hit = seen.get(literal)
+        if hit is None:
+            hit = literal in folded_haystack
+            seen[literal] = hit
+        return hit
+
+    for conjunction in found:
+        if all(any(present(lit) for lit in clause) for clause in conjunction):
+            return False  # this alternative might match, so run the regex
     return True

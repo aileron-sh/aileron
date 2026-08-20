@@ -99,3 +99,23 @@ def test_blocking_rules_are_rare_and_deliberate():
         f"too many rules block by default: {blocking}. Prefer alert unless the "
         f"action is almost never legitimate."
     )
+
+
+def test_the_benchmark_filler_is_benign():
+    """The benchmark must measure the ordinary path, not the alert path.
+
+    scripts/benchmark.py sends realistic-looking text as tool arguments. If any
+    bundled rule fired on it, the numbers would include alert handling and would
+    not mean what the README says they mean.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from benchmark import make_payload
+
+    rules = load_rules(bundled_rules_dir())
+    for size in (64, 4096, 32768):
+        payload = make_payload(size)
+        assert len(payload) == size
+        for key in ("path", "command", "content"):
+            decision = decide(_event("read_file", {key: payload}), rules)
+            assert decision.action == "allow", (
+                f"benchmark filler triggers {decision.rule_ids} at {size} B via {key}")

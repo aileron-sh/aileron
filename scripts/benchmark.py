@@ -127,8 +127,31 @@ def _row(label: str, s: dict[str, float]) -> str:
     return f"{label:<30}" + "".join(f"{s[c]:>10.3f}" for c in _COLS)
 
 
+# A run of one repeated character is the friendliest possible input both to
+# the regex engine, which fails on the first character everywhere, and to the
+# literal prefilter, which finds nothing anywhere. Measuring with it flattered
+# the result by about 3x once rules started prefiltering. This looks like real
+# tool arguments instead: English words, paths, flags, quotes and punctuation.
+# It is fixed text rather than random so the benchmark stays reproducible, and
+# a test asserts no bundled rule fires on it, because measuring the alert path
+# would not be measuring the same thing.
+_FILLER = (
+    "The service reads its configuration at start up and then waits.\n"
+    "path: /srv/app/config.yaml\n"
+    "args: [--data-dir, /var/lib/app, --verbose]\n"
+    "def handler(request):\n"
+    '    data = request.get("body")\n'
+    '    return {"ok": True, "count": 3}\n'
+)
+
+
+def make_payload(size: int) -> str:
+    """Deterministic filler of exactly ``size`` characters."""
+    return (_FILLER * (size // len(_FILLER) + 1))[:size]
+
+
 def measure(payload_size: int, calls: int, warmup: int, rules_dir: str) -> dict:
-    payload = "x" * payload_size
+    payload = make_payload(payload_size)
     direct = stats(bench_direct(calls, warmup, payload))
     proxied = stats(bench_proxied(calls, warmup, payload, None))
     ruled = stats(bench_proxied(calls, warmup, payload, rules_dir))
