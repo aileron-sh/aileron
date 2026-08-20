@@ -204,12 +204,10 @@ trusted third party.
 
 ## Performance
 
-The proxy itself adds **well under a millisecond** per `tools/call`, and that
-cost barely grows with payload size. Rule evaluation is a **separate** cost
-that depends on how many content rules you load, and with the full 32-rule
-bundled pack it is far larger than the proxy on big payloads. The two are
-reported separately below, because they scale differently and you choose your
-own rules.
+The proxy adds **well under a millisecond** per `tools/call`. Matching the full
+32-rule bundled pack against the payload is a **separate** cost that grows with
+payload size, and it is reported separately below, because the two scale
+differently and you choose your own rules.
 
 Every number is reproducible with one command:
 
@@ -234,44 +232,47 @@ evaluation, hash-chain append, re-serialization, and the extra process hop.
 
 | tool arguments | direct | through proxy | + 32 rules | added by proxy | added by rules | **added total** |
 |---|---|---|---|---|---|---|
-| 64 B | 0.041 | 0.183 | 0.340 | 0.142 | 0.158 | **0.299** |
-| 4 KB | 0.054 | 0.216 | 3.100 | 0.162 | 2.884 | **3.046** |
-| 32 KB | 0.172 | 0.552 | 23.193 | 0.380 | 22.641 | **23.021** |
+| 64 B | 0.055 | 0.274 | 0.474 | 0.220 | 0.200 | **0.419** |
+| 4 KB | 0.070 | 0.332 | 0.606 | 0.262 | 0.274 | **0.536** |
+| 32 KB | 0.195 | 0.694 | 2.502 | 0.499 | 1.807 | **2.306** |
 
-**macOS arm64** - Apple M2 Pro, Python 3.13.7, idle machine. The worst of
-three passes, quoted whole, so these are pessimistic rather than cherry-picked
-and `added = (proxy & rules) - direct` holds exactly within the run:
+Shared CI runners vary by nearly 2x between runs. This table quotes the slower
+of two consecutive measurements, so it is pessimistic. The regression baseline
+uses the faster one, so the guard stays sensitive rather than being widened by
+a slow runner.
+
+**macOS arm64** - Apple M2 Pro, Python 3.13.7, idle machine. The worst of three
+passes, quoted whole, so `added = (proxy & rules) - direct` holds exactly
+within the run:
 
 | tool arguments | direct | through proxy | + 32 rules | added by proxy | added by rules | **added total** |
 |---|---|---|---|---|---|---|
-| 64 B | 0.013 | 0.100 | 0.196 | 0.087 | 0.096 | **0.183** |
-| 4 KB | 0.029 | 0.126 | 1.763 | 0.097 | 1.637 | **1.734** |
-| 32 KB | 0.132 | 0.411 | 12.463 | 0.279 | 12.052 | **12.331** |
+| 64 B | 0.017 | 0.088 | 0.162 | 0.071 | 0.074 | **0.145** |
+| 4 KB | 0.033 | 0.128 | 0.387 | 0.095 | 0.259 | **0.354** |
+| 32 KB | 0.139 | 0.446 | 1.058 | 0.308 | 0.611 | **0.919** |
 
 ### What these numbers mean
 
 **The proxy is cheap and nearly flat.** Interception, journaling, and
-re-serialization cost about 0.14 ms on a small call and about 0.38 ms on a
+re-serialization cost about 0.22 ms on a small call and about 0.50 ms on a
 32 KB one, on the slowest hardware tested.
 
-**Rules are where the time goes, and the cost is yours to choose.** Content
-rules are matched against the whole payload, so their cost scales with payload
-size multiplied by the number of rules that reach a content match. On an
-ordinary `read_file` call, 19 of the 30 content patterns in the bundled pack
-scan the full payload. With everything loaded that is 22.6 ms at 32 KB.
+**Rules cost more on big payloads, and the cost is yours to choose.** Content
+rules are matched against the payload, so their cost grows with payload size.
+With all 32 bundled rules loaded that is 0.20 ms on a small call and 1.81 ms
+at 32 KB.
 
-**In practice most tool calls are small.** At 64 B the whole thing, proxy plus
-all 32 rules, is 0.30 ms. A real MCP server call is typically 10 to 1000 ms,
-so mediation there is a rounding error.
+**Most of that work is skipped.** A rule looking for `auditctl` cannot fire on
+a payload with no `auditctl` in it, so each pattern is reduced once to the
+literals it requires and a cheap substring search decides whether the regex
+runs at all. On a benign 32 KB call, 17 of the 19 patterns that would otherwise
+scan the whole payload are skipped, which is what took that row from 23.0 ms to
+2.3 ms. It changes speed and nothing else, and `AILERON_NO_PREFILTER=1` turns
+it off if you ever want it ruled out.
 
-**At 32 KB with the full pack it is not a rounding error**, and this README is
-not going to pretend otherwise: 23 ms is real latency. Three things to know
-about it. It is rule evaluation, not the enforcement path, so it costs speed
-and not any security property. You can cut it directly, by loading fewer rules
-with `--rules` or by giving a rule a cheap `tool.name_contains` clause so an
-expensive pattern never runs on calls it cannot match. And it is fixable:
-prefiltering patterns by a required literal would skip most scans on benign
-traffic, tracked in [#1](https://github.com/Aileron-sh/aileron/issues/1).
+**In context.** A real MCP server call is typically 10 to 1000 ms. At 2.3 ms
+for a 32 KB argument with every rule loaded, and 0.42 ms for an ordinary small
+one, mediation is a small fraction of the call it is mediating.
 
 **Caveats, stated plainly.** These are *sequential* stdio round-trips, one
 call in flight at a time, which is how an agent actually calls tools. This is
@@ -279,15 +280,15 @@ not a concurrent-client benchmark; a many-client run is on the roadmap.
 The tool reports mean, median, p95 and p99; these tables quote medians,
 because medians are stable across runs and **p95 is not** - tail latency on a
 desktop OS swings with scheduling, and a single pass can look 40% better or
-worse than its neighbour. Linux is the slower machine
-because a shared-vCPU CI runner is slower than an idle laptop, and those are
-the conservative figures CI enforces. Measure on your own hardware before
-quoting a number.
+worse than its neighbour. Linux is the slower machine because a shared-vCPU CI
+runner is slower than an idle laptop, and those are the conservative figures CI
+enforces. Measure on your own hardware before quoting a number.
 
 CI enforces this: a job fails if median overhead regresses more than 2x against
 [`scripts/benchmark_baseline.json`](scripts/benchmark_baseline.json), so
-performance cannot decay silently. The baseline records the rule-pack size it
-was measured against, because comparing a 32-rule run to a 2-rule baseline
+performance cannot decay silently. It re-measures once before failing, so a
+single slow runner does not cry wolf. The baseline records the rule-pack size
+it was measured against, because comparing a 32-rule run to a 2-rule baseline
 reports a regression that is not there.
 
 ## Integrations & ecosystem
