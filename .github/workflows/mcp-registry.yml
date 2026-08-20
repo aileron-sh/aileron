@@ -1,0 +1,76 @@
+name: MCP Registry
+
+# Publishes server.json to the official MCP Registry.
+#
+# Authentication is GitHub OIDC, the same trustless pattern as the PyPI
+# release: the registry verifies the workflow's identity directly, so no token
+# is created, stored, or handled by a person. For a project whose pitch is that
+# records can be trusted, not having a long-lived credential to leak is part of
+# the argument.
+#
+# The registry separately checks ownership by looking for an `mcp-name` marker
+# in the published PyPI description, so the PyPI release must land first. That
+# is why this runs after a release rather than as part of one.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for OIDC
+
+jobs:
+  publish:
+    name: Publish server.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install the publisher
+        # Built from source so the Go checksum database verifies it, rather
+        # than curling a release binary.
+        run: go install github.com/modelcontextprotocol/registry/cmd/publisher@v1.8.1
+
+      - name: Check server.json matches the released version
+        run: |
+          set -eu
+          declared=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          package=$(python3 -c "import json;print(json.load(open('server.json'))['packages'][0]['version'])")
+          project=$(python3 -c "
+          import re,pathlib
+          text = pathlib.Path('pyproject.toml').read_text()
+          print(re.search(r'^version = \"([^\"]+)\"', text, re.M).group(1))")
+          echo "  server.json: $declared   package: $package   pyproject: $project"
+          if [ "$declared" != "$project" ] || [ "$package" != "$project" ]; then
+            echo "::error::server.json version does not match pyproject.toml." \
+                 "The registry would advertise a version that is not on PyPI."
+            exit 1
+          fi
+
+      - name: Validate
+        run: "$HOME/go/bin/publisher validate"
+
+      - name: Publish
+        run: |
+          "$HOME/go/bin/publisher" login github-oidc
+          "$HOME/go/bin/publisher" publish
+
+      - name: Confirm it is listed
+        run: |
+          set -eu
+          name="io.github.aileron-sh/aileron"
+          for attempt in 1 2 3 4 5; do
+            if curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=aileron" \
+               | grep -q "$name"; then
+              echo "  listed as $name"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::published, but the entry has not appeared in search yet"
