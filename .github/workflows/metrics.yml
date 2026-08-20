@@ -1,0 +1,64 @@
+name: Metrics
+
+# Records a dated adoption snapshot every day and commits it.
+#
+# The reason this is a scheduled job rather than something run occasionally:
+# GitHub's traffic API retains views and clones for 14 days only. A day that is
+# never snapshotted is gone permanently. The collector stores the full per-day
+# breakdown, so a missed run is backfilled by the next one inside the window —
+# but a gap longer than 14 days is unrecoverable.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, off the hour (GitHub's cron is congested on it)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: metrics
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Record adoption snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Collect
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/collect_metrics.py
+
+      - name: Summary
+        run: |
+          {
+            echo '## Adoption snapshot'
+            echo '```'
+            python scripts/collect_metrics.py --summary | tail -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add metrics/history.jsonl
+          if git diff --cached --quiet; then
+            echo "no change to record"
+            exit 0
+          fi
+          git commit -m "metrics: snapshot $(date -u +%Y-%m-%d)"
+          # The scheduled job races nothing, but a manual dispatch can overlap
+          # with a push; rebase rather than fail.
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          echo "could not push after 3 attempts" >&2
+          exit 1
