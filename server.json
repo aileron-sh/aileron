@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.aileron-sh/aileron",
+  "title": "Aileron Journal",
+  "description": "Read-only queries over Aileron audit journals: verify integrity, search recorded tool calls",
+  "version": "0.1.4",
+  "websiteUrl": "https://github.com/aileron-sh/aileron",
+  "repository": {
+    "url": "https://github.com/aileron-sh/aileron",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "aileron",
+      "version": "0.1.4",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "uvx",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "valueHint": "subcommand",
+          "value": "serve",
+          "description": "Runs the read-only journal server. Aileron's other subcommands are CLI tools, not MCP servers."
+        },
+        {
+          "type": "named",
+          "name": "--root",
+          "description": "Directory holding the journals to expose. Paths are confined to it, so nothing outside can be read.",
+          "isRequired": true,
+          "default": "."
+        }
+      ]
+    }
+  ]
+}

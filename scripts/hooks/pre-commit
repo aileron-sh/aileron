@@ -28,6 +28,7 @@ examples
 metrics
 pyproject.toml
 scripts
+server.json
 src
 tests
 "

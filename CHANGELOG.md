@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [0.1.4] - 2026-08-20
+
+### Added
+
+- **`aileron serve`, a read-only MCP server over your journals.** Aileron sits
+  in front of MCP servers; this makes it one, so an assistant can be asked what
+  an agent did and read the answer out of the tamper-evident record. Three
+  tools: `verify_journal`, `query_events`, `explain_rule`.
+
+  Read only is load-bearing, not cosmetic. The agent being recorded is the
+  untrusted party, so a write or delete tool would hand the suspect the
+  evidence locker. There is none, and a test enforces it.
+
+  Four defences beyond that: paths are confined to `--root` and only `.jsonl`
+  opens, because `verify_journal(path)` would otherwise be an arbitrary file
+  read; every answer carries its own integrity status, because confinement does
+  not stop an agent writing a plausible journal inside the root and handing you
+  invented history; recorded values are stripped of control characters,
+  truncated, and labelled untrusted, because tool names are attacker-chosen and
+  become a prompt-injection channel when read by an assistant; and replies are
+  byte-capped, the same reasoning as `MAX_MESSAGE_BYTES` in the proxy.
+
+- **32 bundled detection rules**, up from 2, across credential theft, cloud
+  metadata abuse, exfiltration, supply chain, persistence, anti-forensics,
+  database destruction, and agent-specific abuse. Each ships with the calls it
+  must catch and the ordinary work it must ignore; a false positive fails the
+  build.
+
+- `server.json`, so Aileron can be listed in the official MCP Registry. It was
+  not a server before this release, so listing it would have been
+  miscategorised.
+
+- `examples/incident_replay.py` and `docs/what-did-it-touch.md`.
+
 ## [0.1.3] - 2026-08-03
 
 ### Security
