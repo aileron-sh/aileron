@@ -43,6 +43,7 @@ htmlcov/
 *.chain.jsonl
 *.chain.jsonl.checkpoints.jsonl
 demo-report.html
+incident.html  # examples/incident_replay.py writes this
 
 # Signing keys. Public keys (*.pub) may be committed if you want them in
 # the repo for verification; private keys must never be.
