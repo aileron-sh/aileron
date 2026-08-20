@@ -224,22 +224,31 @@ checked. 2,000 sequential calls per configuration after 200 discarded warmup
 calls; digest-only journaling. Overhead covers JSON-RPC parsing, policy
 evaluation, hash-chain append, re-serialization, and the extra process hop.
 
+**About the payload.** The tool arguments are fixed text that looks like real
+tool arguments: English words, paths, flags, quotes and punctuation. That
+matters more than it sounds. This benchmark used to send a run of one repeated
+character, which is the friendliest possible input both to the regex engine,
+which fails on the first character everywhere, and to the literal prefilter
+described below, which finds nothing anywhere. It was flattering the result by
+about 3x. A test asserts no bundled rule fires on the filler, so these numbers
+are the ordinary path and not the alert path.
+
 ### Added latency per `tools/call` (milliseconds)
 
 **Linux x86_64** - GitHub Actions `ubuntu-latest` (2 shared vCPU), Python
-3.12.13. Re-measured by CI on every push:
+3.12.14. Re-measured by CI on every push:
 [![Benchmark](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml/badge.svg)](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml)
 
 | tool arguments | direct | through proxy | + 32 rules | added by proxy | added by rules | **added total** |
 |---|---|---|---|---|---|---|
-| 64 B | 0.055 | 0.274 | 0.474 | 0.220 | 0.200 | **0.419** |
-| 4 KB | 0.070 | 0.332 | 0.606 | 0.262 | 0.274 | **0.536** |
-| 32 KB | 0.195 | 0.694 | 2.502 | 0.499 | 1.807 | **2.306** |
+| 64 B | 0.077 | 0.305 | 0.546 | 0.228 | 0.242 | **0.469** |
+| 4 KB | 0.078 | 0.348 | 0.740 | 0.270 | 0.392 | **0.662** |
+| 32 KB | 0.241 | 0.799 | 3.030 | 0.558 | 2.231 | **2.789** |
 
-Shared CI runners vary by nearly 2x between runs. This table quotes the slower
-of two consecutive measurements, so it is pessimistic. The regression baseline
-uses the faster one, so the guard stays sensitive rather than being widened by
-a slow runner.
+Shared CI runners vary between runs, by as much as 1.6x on the small-payload
+row. This table quotes the slower of two consecutive measurements. The
+regression baseline uses the faster one, so a slow runner cannot quietly widen
+the guard.
 
 **macOS arm64** - Apple M2 Pro, Python 3.13.7, idle machine. The worst of three
 passes, quoted whole, so `added = (proxy & rules) - direct` holds exactly
@@ -247,49 +256,52 @@ within the run:
 
 | tool arguments | direct | through proxy | + 32 rules | added by proxy | added by rules | **added total** |
 |---|---|---|---|---|---|---|
-| 64 B | 0.017 | 0.088 | 0.162 | 0.071 | 0.074 | **0.145** |
-| 4 KB | 0.033 | 0.128 | 0.387 | 0.095 | 0.259 | **0.354** |
-| 32 KB | 0.139 | 0.446 | 1.058 | 0.308 | 0.611 | **0.919** |
+| 64 B | 0.016 | 0.089 | 0.195 | 0.073 | 0.105 | **0.178** |
+| 4 KB | 0.034 | 0.157 | 0.507 | 0.123 | 0.350 | **0.474** |
+| 32 KB | 0.156 | 0.457 | 2.604 | 0.300 | 2.147 | **2.447** |
 
 ### What these numbers mean
 
 **The proxy is cheap and nearly flat.** Interception, journaling, and
-re-serialization cost about 0.22 ms on a small call and about 0.50 ms on a
-32 KB one, on the slowest hardware tested.
+re-serialization cost about 0.23 ms on a small call and about
+0.56 ms on a 32 KB one, on the slowest hardware tested.
 
 **Rules cost more on big payloads, and the cost is yours to choose.** Content
 rules are matched against the payload, so their cost grows with payload size.
-With all 32 bundled rules loaded that is 0.20 ms on a small call and 1.81 ms
-at 32 KB.
+With all 32 bundled rules loaded that is 0.24 ms on a small
+call and 2.23 ms at 32 KB.
 
-**Most of that work is skipped.** A rule looking for `auditctl` cannot fire on
-a payload with no `auditctl` in it, so each pattern is reduced once to the
-literals it requires and a cheap substring search decides whether the regex
-runs at all. On a benign 32 KB call, 17 of the 19 patterns that would otherwise
-scan the whole payload are skipped, which is what took that row from 23.0 ms to
-2.3 ms. It changes speed and nothing else, and `AILERON_NO_PREFILTER=1` turns
-it off if you ever want it ruled out.
+**Most of that work is skipped before it starts.** A rule looking for
+`auditctl` cannot fire on a payload with no `auditctl` in it. Each pattern is
+read once and reduced to the literals it requires, and cheap substring searches
+decide whether the regex runs at all. Requirements are conjunctions, so a rule
+needing `systemctl` near `disable` near `auditd` is skipped on ordinary prose
+that merely contains the word "service". On a benign 32 KB call, 17 of the 19
+patterns that would otherwise scan the whole payload never run. It changes
+speed and nothing else, and `AILERON_NO_PREFILTER=1` turns it off if you want
+it ruled out during an investigation.
 
-**In context.** A real MCP server call is typically 10 to 1000 ms. At 2.3 ms
-for a 32 KB argument with every rule loaded, and 0.42 ms for an ordinary small
-one, mediation is a small fraction of the call it is mediating.
+**In context.** A real MCP server call is typically 10 to 1000 ms. At
+2.8 ms for a 32 KB argument with every rule loaded, and
+0.47 ms for an ordinary small one, mediation is a small
+fraction of the call it is mediating.
 
 **Caveats, stated plainly.** These are *sequential* stdio round-trips, one
 call in flight at a time, which is how an agent actually calls tools. This is
-not a concurrent-client benchmark; a many-client run is on the roadmap.
-The tool reports mean, median, p95 and p99; these tables quote medians,
-because medians are stable across runs and **p95 is not** - tail latency on a
-desktop OS swings with scheduling, and a single pass can look 40% better or
-worse than its neighbour. Linux is the slower machine because a shared-vCPU CI
-runner is slower than an idle laptop, and those are the conservative figures CI
-enforces. Measure on your own hardware before quoting a number.
+not a concurrent-client benchmark; a many-client run is on the roadmap. The
+tool reports mean, median, p95 and p99; these tables quote medians, because
+medians are stable across runs and **p95 is not** - tail latency swings with
+scheduling. Linux is the slower machine because a shared-vCPU CI runner is
+slower than an idle laptop, and those are the conservative figures CI enforces.
+Measure on your own hardware before quoting a number.
 
 CI enforces this: a job fails if median overhead regresses more than 2x against
 [`scripts/benchmark_baseline.json`](scripts/benchmark_baseline.json), so
 performance cannot decay silently. It re-measures once before failing, so a
-single slow runner does not cry wolf. The baseline records the rule-pack size
-it was measured against, because comparing a 32-rule run to a 2-rule baseline
-reports a regression that is not there.
+single slow runner does not cry wolf. The baseline records both the rule-pack
+size and the payload shape it was measured against, because a change to either
+is more work rather than slower code, and the guard says so instead of
+reporting a regression that is not there.
 
 ## Integrations & ecosystem
 
