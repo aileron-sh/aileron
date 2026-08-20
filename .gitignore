@@ -47,3 +47,7 @@ demo-report.html
 # Signing keys. Public keys (*.pub) may be committed if you want them in
 # the repo for verification; private keys must never be.
 *.key
+
+# Local AI tooling scaffolding (not part of the project)
+.aidlc/
+aidlc-docs/
