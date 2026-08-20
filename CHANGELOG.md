@@ -30,10 +30,29 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   character; a test proves over all 1,114,112 of them that every one folds to
   exactly the character it is equal to.
 
+  A requirement is a conjunction, not a single set. Rule `aileron-162` needs
+  `systemctl` near `disable` near `auditd`, so requiring only the first set
+  meant any prose containing the ordinary word "service" paid for a full scan.
+  Requiring all of them took a 32 KB markdown payload from 6.47 ms to 2.23 ms.
+
   Verified by a differential test over every example in the rule pack, a
-  property test on generated patterns, and a mutation fuzz that starts from
-  inputs the rules must catch and checks the invariant on 25,000 mutants that
-  still match. None of them found a verdict difference.
+  property test on generated patterns, a mutation fuzz that starts from inputs
+  the rules must catch and checks the invariant on 31,570 mutants that still
+  match, and an independently written adversarial attack that generates strings
+  from each pattern's own parse tree and checked 2,324,740 matching pairs. None
+  of them found a verdict difference.
+
+### Changed
+
+- **The benchmark sends realistic tool arguments instead of a run of one
+  repeated character.** That was the friendliest possible input both to the
+  regex engine, which fails on the first character everywhere, and to the new
+  prefilter, which finds nothing anywhere, and it was flattering the result by
+  about 3x. Since the README publishes those numbers, the payload is now fixed
+  text that looks like real arguments, and a test asserts no bundled rule fires
+  on it so the benchmark still measures the ordinary path. The baseline records
+  the payload shape alongside the rule count, because a change to either is
+  more work rather than slower code.
 
 ### Performance
 
