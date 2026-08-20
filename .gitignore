@@ -48,6 +48,32 @@ demo-report.html
 # the repo for verification; private keys must never be.
 *.key
 
-# Local AI tooling scaffolding (not part of the project)
+# Scaffolding dropped by AI coding agents, editors, and codegen tools.
+# None of it is part of this project; it appears without being asked for.
 .aidlc/
 aidlc-docs/
+.kiro/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.amazonq/
+.q/
+.continue/
+.aider*
+.roo/
+.cline*
+.codeium/
+.tabnine*
+.sourcegraph/
+.copilot/
+.claude/
+.opencode/
+.goose/
+.devin/
+.factory/
+
+# Editor / tooling local state
+.idea/
+.vscode/
+*.code-workspace

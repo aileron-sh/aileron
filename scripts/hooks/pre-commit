@@ -1,0 +1,78 @@
+#!/bin/sh
+# Refuse to commit anything outside the project's known layout.
+#
+# This exists because a broad `git add` once swept another tool's scaffolding
+# into this public repo. Files appear in this working tree that nobody
+# deliberately put there — agent harnesses, editors, and codegen tools all
+# drop directories in. A clean `git status` is not a safe assumption, so the
+# allowlist is enforced mechanically rather than by remembering to look.
+#
+# Install:  git config core.hooksPath scripts/hooks
+# Override: git commit --no-verify   (deliberate, one commit only)
+
+set -eu
+
+# Top-level entries that legitimately belong in this repository.
+allowed="
+.github
+.gitignore
+CHANGELOG.md
+CLAUDE.md
+CONTRIBUTING.md
+LICENSE
+README.md
+SECURITY.md
+SPEC.md
+examples
+metrics
+pyproject.toml
+scripts
+src
+tests
+"
+
+# Never commit these, wherever they appear — gitignore covers them, but a
+# force-add would slip past it.
+forbidden_patterns='\.key$|\.pem$|\.chain\.jsonl|\.env$|\.env\.|id_rsa|\.p12$|\.pfx$'
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+unexpected=""
+secrets=""
+
+for path in $staged; do
+    top=${path%%/*}
+    case "$(printf '%s\n' "$allowed" | grep -Fx "$top" || true)" in
+        "") unexpected="$unexpected  $path
+" ;;
+    esac
+    if printf '%s\n' "$path" | grep -Eq "$forbidden_patterns"; then
+        secrets="$secrets  $path
+"
+    fi
+done
+
+status=0
+
+if [ -n "$secrets" ]; then
+    printf '\n\033[31mBLOCKED: staged files match a never-commit pattern\033[0m\n\n'
+    printf '%s\n' "$secrets"
+    printf 'Keys, private journals, and .env files must never enter this repo.\n'
+    status=1
+fi
+
+if [ -n "$unexpected" ]; then
+    printf '\n\033[31mBLOCKED: staged paths are outside the known project layout\033[0m\n\n'
+    printf '%s\n' "$unexpected"
+    printf 'This repo is public. If these belong here, add the top-level entry to\n'
+    printf 'the allowlist in scripts/hooks/pre-commit. If they were dropped by a\n'
+    printf 'tool, unstage them (git restore --staged <path>) and gitignore them.\n'
+    status=1
+fi
+
+if [ "$status" -ne 0 ]; then
+    printf '\nDeliberate exception: git commit --no-verify\n\n'
+fi
+
+exit "$status"
