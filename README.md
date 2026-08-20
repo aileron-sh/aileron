@@ -133,9 +133,26 @@ Three tools, all read only: `verify_journal` (is this record intact),
 
 There is no write, delete, or sign tool, and there should never be. The agent
 being recorded is the untrusted party, so giving it a way to edit the journal
-would hand the suspect the evidence locker. Paths are confined to `--root`,
-only `.jsonl` files can be opened, and errors never echo file contents, so this
-cannot be used as a general file reader.
+would hand the suspect the evidence locker.
+
+Four things follow from that, and they are the reason this is more than a
+wrapper around `aileron verify`:
+
+- **Paths are confined to `--root`** and only `.jsonl` opens. Otherwise
+  `verify_journal(path)` is an arbitrary file read.
+- **Every answer carries its own integrity status.** Confinement stops an agent
+  reading files it should not; it does not stop one *writing* a plausible
+  journal inside the root and handing you an invented history. So each reply
+  says whether the chain verifies and whether an adjacent signed checkpoint
+  agrees.
+- **Recorded values are treated as hostile.** Tool names and rule ids were
+  chosen by the agent under investigation, so they reach an assistant labelled
+  as untrusted data, stripped of control characters, and truncated. A tool
+  named `IGNORE PREVIOUS INSTRUCTIONS...` is evidence to report, not an
+  instruction to follow.
+- **Digest-only stays digest-only.** `capture_content` governs what the journal
+  stores. It never widens what this server hands back, and errors never echo
+  file contents.
 
 ### Policy rules
 
