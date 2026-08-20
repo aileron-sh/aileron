@@ -145,6 +145,9 @@ _FILLER = (
 )
 
 
+PAYLOAD_SHAPE = "realistic-text-v1"
+
+
 def make_payload(size: int) -> str:
     """Deterministic filler of exactly ``size`` characters."""
     return (_FILLER * (size // len(_FILLER) + 1))[:size]
@@ -199,6 +202,14 @@ def _check_regression(document: dict, baseline_path: str, factor: float) -> int:
               f"{now_rules}. Content rules are\n        matched against the whole "
               "payload, so cost scales with pack size as well as\n        payload "
               "size. Any difference below is workload, not necessarily code.")
+
+    was_shape = baseline.get("meta", {}).get("payload_shape", "repeated-char")
+    now_shape = document.get("meta", {}).get("payload_shape", "repeated-char")
+    if was_shape != now_shape:
+        print(f"  note: the payload shape changed, {was_shape} -> {now_shape}. "
+              "How much work\n        the rules do depends on what the payload "
+              "contains, so any difference\n        below is workload, not "
+              "necessarily code.")
     print(f"{'payload':>10}{'baseline':>12}{'current':>12}{'ratio':>9}   verdict")
     failed = False
     for result in document["results"]:
@@ -254,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
         "warmup": args.warmup,
         "mode": "sequential stdio",
         "rules": len(list(Path(rules_dir).glob("*.yml"))),
+        # Payload shape belongs in the baseline for the same reason rule count
+        # does. Changing the filler changes how much work the rules do, and
+        # without this a shape change reads as a code regression.
+        "payload_shape": PAYLOAD_SHAPE,
     }
     print(f"aileron {meta['aileron']} | Python {meta['python']} | {meta['platform']}")
     print(f"{args.calls} sequential tools/call per configuration, "
