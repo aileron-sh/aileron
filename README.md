@@ -100,6 +100,14 @@ $ aileron proxy --log run.chain.jsonl --rules rules -- \
 A blocked call returns a JSON-RPC error (`-32000: blocked by aileron rule
 <id>`) to the client; the child is never invoked.
 
+**Verified against real MCP servers**, not just test doubles. Aileron has been
+run in front of the official `@modelcontextprotocol/server-filesystem`
+(`secure-filesystem-server` 0.2.0, 14 tools) and `@modelcontextprotocol/server-memory`
+(0.6.3, 9 tools): the handshake completes, tools list normally, real calls work,
+a blocked write never reaches the server, and the journal verifies. That check
+ships as a test (`tests/test_real_mcp_server.py`, run with
+`AILERON_LIVE_MCP=1`).
+
 Mediation costs **sub-millisecond median overhead per `tools/call`, verified
 on commodity hardware** - see [Performance](#performance).
 

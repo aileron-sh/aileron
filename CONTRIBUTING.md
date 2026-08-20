@@ -64,6 +64,20 @@ rather than loosening the threshold:
 $ python scripts/benchmark.py --json scripts/benchmark_baseline.json
 ```
 
+## Testing against a real MCP server
+
+Most proxy tests use a small fake server written for the test. That proves the
+logic, but not the claim the README makes, which is that Aileron works in front
+of a real MCP server. One test does the real thing. It needs node and network,
+so it is off by default:
+
+```console
+$ AILERON_LIVE_MCP=1 python3 -m pytest tests/test_real_mcp_server.py -v
+```
+
+Run it before a release. If the MCP protocol changes, this is the test that
+notices.
+
 ## Code style
 
 - `from __future__ import annotations` at the top of every module.
