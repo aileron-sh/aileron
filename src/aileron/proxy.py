@@ -82,7 +82,7 @@ def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
         # Newline-delimited JSON. readline() reads the remainder of the line in
         # one buffered call; a byte-at-a-time loop here costs one syscall per
         # byte and dominates latency on large tool arguments. The cap is the
-        # same one the framed path enforces — neither peer may drive us to
+        # same one the framed path enforces - neither peer may drive us to
         # buffer without bound.
         rest = stream.readline(MAX_MESSAGE_BYTES)
         if not rest.endswith(b"\n") and len(rest) >= MAX_MESSAGE_BYTES - 1:
@@ -110,7 +110,7 @@ def _read_message(stream: BinaryIO) -> tuple[bytes, bytes] | None:
             break
     # Reject ambiguous framing: a duplicate or non-numeric Content-Length lets
     # a peer desync the proxy's policy-checked message boundary from the
-    # child's (request-smuggling). Fail closed instead — the caller tears the
+    # child's (request-smuggling). Fail closed instead - the caller tears the
     # proxy down, which favors enforcement integrity over availability.
     length: int | None = None
     for line in headers.decode("latin-1").replace("\r\n", "\n").split("\n"):
@@ -268,7 +268,7 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 msg = json.loads(payload)
             except Exception:
                 # Fail closed. If we cannot parse it we cannot police it, and
-                # the child's parser may well accept what ours rejected — that
+                # the child's parser may well accept what ours rejected - that
                 # difference alone would be a policy bypass. Never forward.
                 msg = _UNPARSEABLE
             if msg is _UNPARSEABLE:

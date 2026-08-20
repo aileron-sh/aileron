@@ -5,7 +5,7 @@ committed, so the record is version-controlled and every entry carries a git
 commit date as independent corroboration of when it was taken.
 
 Why this exists: GitHub's traffic API retains views and clones for **14 days
-only**. A day that is never snapshotted is gone permanently — no query, no
+only**. A day that is never snapshotted is gone permanently - no query, no
 support ticket, and no amount of money recovers it. So this stores the full
 per-day breakdown rather than just the running totals: if a scheduled run is
 missed, the next run within the window backfills it.
@@ -89,7 +89,7 @@ def collect_repo(token):
 
 
 def collect_traffic(token):
-    """Views and clones. The daily arrays are the whole point — keep them."""
+    """Views and clones. The daily arrays are the whole point - keep them."""
     views = _get(f"https://api.github.com/repos/{REPO}/traffic/views", token)
     clones = _get(f"https://api.github.com/repos/{REPO}/traffic/clones", token)
     return {
@@ -112,7 +112,7 @@ def collect_referrers(token):
 
 
 def collect_community(token):
-    """Contributors and who is opening issues — the 'independent interest' signal."""
+    """Contributors and who is opening issues - the 'independent interest' signal."""
     contributors = _get(
         f"https://api.github.com/repos/{REPO}/contributors?per_page=100&anon=0", token)
     issues = _get(
@@ -167,7 +167,7 @@ def collect_pypi():
 def snapshot() -> dict:
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
-        print("  ! GITHUB_TOKEN unset — GitHub metrics will be limited", file=sys.stderr)
+        print("  ! GITHUB_TOKEN unset - GitHub metrics will be limited", file=sys.stderr)
     print(f"collecting {REPO} ...")
     return {
         "collected_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -238,14 +238,14 @@ def main(argv=None) -> int:
     s = snapshot()
     print_snapshot(s)
     if args.dry_run:
-        print("\n(dry run — nothing written)")
+        print("\n(dry run - nothing written)")
         return 0
 
     # Traffic is the only field that cannot be recovered later. If it failed,
     # say so loudly rather than banking a snapshot with a hole in it.
     traffic_failed = isinstance(s.get("traffic"), dict) and "error" in s["traffic"]
     if traffic_failed:
-        print("\n  WARNING: traffic collection failed — views/clones for today are\n"
+        print("\n  WARNING: traffic collection failed - views/clones for today are\n"
               "  unrecoverable after 14 days. The Actions GITHUB_TOKEN cannot read\n"
               "  traffic endpoints; set a METRICS_TOKEN secret (see metrics/README.md)\n"
               "  or run this locally with GITHUB_TOKEN=$(gh auth token).",

@@ -5,7 +5,7 @@ name: Metrics
 # The reason this is a scheduled job rather than something run occasionally:
 # GitHub's traffic API retains views and clones for 14 days only. A day that is
 # never snapshotted is gone permanently. The collector stores the full per-day
-# breakdown, so a missed run is backfilled by the next one inside the window —
+# breakdown, so a missed run is backfilled by the next one inside the window -
 # but a gap longer than 14 days is unrecoverable.
 
 on:
@@ -32,7 +32,7 @@ jobs:
 
       - name: Collect
         env:
-          # The traffic endpoints (views/clones — the only data that expires)
+          # The traffic endpoints (views/clones - the only data that expires)
           # require a user token with repo scope. The Actions GITHUB_TOKEN
           # cannot reach them at any permission level, so METRICS_TOKEN is what
           # makes this job worth running. See metrics/README.md for setup.

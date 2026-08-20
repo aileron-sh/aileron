@@ -6,7 +6,7 @@ name: Benchmark
 # Two deliberate design choices:
 #
 #  1. It only runs when code that can affect latency changes. A detection-rule
-#     or docs PR never triggers it — the contribution path we most want to keep
+#     or docs PR never triggers it - the contribution path we most want to keep
 #     frictionless should not be gated on a latency measurement.
 #  2. When it does run, it can fail. An advisory-only check is one nobody reads.
 #     The 2x threshold is far above real variance (3-13%), and a trip is
@@ -56,7 +56,7 @@ jobs:
           set -u
 
           if [ ! -f scripts/benchmark_baseline.json ]; then
-            echo "No baseline committed yet — recording only, nothing to compare."
+            echo "No baseline committed yet - recording only, nothing to compare."
             python scripts/benchmark.py --calls 2000 --json benchmark-results.json \
               | tee benchmark-output.txt
             exit 0
@@ -84,7 +84,7 @@ jobs:
 
           if measure; then
             cat benchmark-output.txt
-            echo "::notice::Second measurement passed — first trip attributed to runner noise."
+            echo "::notice::Second measurement passed - first trip attributed to runner noise."
             exit 0
           fi
 

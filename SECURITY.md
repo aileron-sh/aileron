@@ -7,7 +7,7 @@ same standard we ask users to trust.
 
 **Please do not open public issues for security vulnerabilities.**
 
-Report privately via **GitHub Private Vulnerability Reporting** — use the
+Report privately via **GitHub Private Vulnerability Reporting** - use the
 "Security" tab on the repository → "Report a vulnerability" (GitHub private
 advisories). This keeps coordination in one place and lets us publish a
 credited advisory on release.
@@ -41,13 +41,13 @@ a reportable vulnerability.
   `aileron verify-checkpoint` accepts without access to the private key.
 - **Policy-enforcement bypass on the proxy path**: a `tools/call` that a
   matching `block` rule should stop but that reaches the child process
-  (including via framing tricks — newline-delimited vs. `Content-Length`
+  (including via framing tricks - newline-delimited vs. `Content-Length`
   framing confusion is explicitly in scope).
 - **Canonicalization attacks**: two semantically different events that hash
   identically, or event JSON whose canonical encoding is ambiguous.
 - **Unsafe content handling**: paths where tool arguments/results are
   persisted despite `capture_content=False`, or log/report injection (the
-  HTML report must not execute recorded content — it renders with inline
+  HTML report must not execute recorded content - it renders with inline
   CSS and no external assets).
 - **Unexpected network behavior**: any network call from the library or
   CLI. There are none by design; one appearing is treated as a
@@ -67,13 +67,13 @@ a reportable vulnerability.
   checkpoint *within* the sequence is detected. Deleting the most recent
   checkpoint(s) is not: it is the same problem as truncating the tail of any
   append-only file, and no purely local scheme can detect it. Anchoring the
-  newest checkpoint somewhere the attacker does not control — a transparency
-  log, a remote copy, a monitoring system — is what closes this.
+  newest checkpoint somewhere the attacker does not control - a transparency
+  log, a remote copy, a monitoring system - is what closes this.
 
   Note that `aileron verify` cross-checks an adjacent
   `<log>.checkpoints.jsonl` when one exists, so truncating the journal while
   leaving the checkpoint file behind *is* reported. That check is
-  **unauthenticated** — it compares counts and tip hashes without verifying
+  **unauthenticated** - it compares counts and tip hashes without verifying
   signatures, because `verify` requires no key. It raises the cost of naive
   truncation; it is not the cryptographic guarantee. Use
   `aileron verify-checkpoint` with a public key you obtained out of band for
@@ -84,7 +84,7 @@ a reportable vulnerability.
   deny mediation (by crashing the proxy), but cannot obtain unlogged
   execution through it.
 - **SDK instrumentation is cooperative.** `@track` records the code paths
-  you decorate. Agent code — or an attacker controlling it — can simply not
+  you decorate. Agent code - or an attacker controlling it - can simply not
   call the wrapped function. This is inherent to in-process SDKs; the MCP
   proxy exists for enforcement the agent process cannot skip, and the
   README states this explicitly.
@@ -99,7 +99,7 @@ a reportable vulnerability.
 
 - Vulnerabilities in agent frameworks, MCP servers, or LLM providers
   themselves (report those upstream).
-- Kernel/syscall-level interception — explicitly out of scope for v1 (see
+- Kernel/syscall-level interception - explicitly out of scope for v1 (see
   README roadmap).
 - Social engineering of maintainers, and issues requiring physical access.
 
@@ -110,6 +110,6 @@ a reportable vulnerability.
 3. Fix developed privately in a security advisory fork.
 4. Coordinated release: patched version + GitHub Security Advisory with
    CVE request where warranted, crediting the reporter.
-5. Post-mortem note in the release notes for integrity-relevant fixes —
+5. Post-mortem note in the release notes for integrity-relevant fixes -
    for a tamper-evidence tool, transparency about failures is part of the
    product.

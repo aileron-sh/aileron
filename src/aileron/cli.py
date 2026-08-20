@@ -146,7 +146,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             print(f"error: {problem}", file=sys.stderr)
         print(f"TAMPERED: chain is internally valid but contradicts "
               f"{args.log}.checkpoints.jsonl", file=sys.stderr)
-        print("note: signatures were not checked here — run "
+        print("note: signatures were not checked here - run "
               "'aileron verify-checkpoint' with the public key you trust.",
               file=sys.stderr)
         return 2
@@ -197,7 +197,7 @@ def _cmd_verify_checkpoint(args: argparse.Namespace) -> int:
         return 1
     # The key IS the trust anchor. Resolving it from the directory under audit
     # means an attacker who can rewrite the log can also swap the key and
-    # re-sign — so say exactly which key was used, and warn when it came from
+    # re-sign - so say exactly which key was used, and warn when it came from
     # alongside the evidence rather than from the operator.
     resolved = Path(key).resolve()
     fingerprint = hashlib.sha256(resolved.read_bytes()).hexdigest()[:16]
@@ -325,7 +325,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
     The journal uses the default digest-only mode: policy rules and the
     anomaly detector see full arguments in memory, but only digests are
-    persisted — the same privacy posture as production defaults.
+    persisted - the same privacy posture as production defaults.
     """
     from .chainlog import ChainLog, verify
     from .detect import Baseline

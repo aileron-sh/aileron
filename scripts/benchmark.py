@@ -1,7 +1,7 @@
 """Measure the latency the Aileron MCP proxy adds to a tools/call round-trip.
 
-Method: drive an identical stdio MCP child server two ways — directly, and
-through `aileron proxy` — and subtract. The delta is the proxy's cost:
+Method: drive an identical stdio MCP child server two ways - directly, and
+through `aileron proxy` - and subtract. The delta is the proxy's cost:
 JSON-RPC parse, policy evaluation, hash-chain append, re-serialization, and
 the extra process hop. The absolute baseline is reported alongside the delta
 so the subtraction can be checked rather than taken on trust.
@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 
 # A minimal stdio MCP server: newline-delimited JSON-RPC, echoes tools/call.
-# Kept trivial on purpose — we are measuring the proxy, not the server.
+# Kept trivial on purpose - we are measuring the proxy, not the server.
 CHILD = (
     "import sys, json\n"
     "for line in sys.stdin:\n"
@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\nADDED OVERHEAD = (through proxy + rules) - (direct to child). It "
           "covers JSON-RPC\nparsing, policy evaluation, hash-chain append, "
-          "re-serialization, and the extra\nprocess hop. Sequential stdio — this "
+          "re-serialization, and the extra\nprocess hop. Sequential stdio - this "
           "is not a concurrent-client benchmark.")
 
     document = {"meta": meta, "results": results}

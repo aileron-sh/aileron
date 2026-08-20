@@ -18,7 +18,7 @@ the event. Built-in event producers do not set one, so it is only useful for
 custom pipelines that annotate events with their own severity.
 
 Security note: ``key_regex`` patterns are executed with ``re`` and can
-backtrack pathologically. Rules are trusted configuration — vet imported
+backtrack pathologically. Rules are trusted configuration - vet imported
 community rules as you would Sigma or Semgrep rules before running them.
 """
 

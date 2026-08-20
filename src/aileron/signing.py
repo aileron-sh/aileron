@@ -158,7 +158,7 @@ def check_against_checkpoints(log_path: str) -> list[str]:
     there are no checkpoints to check against).
 
     **Unauthenticated by design.** Signatures are not verified here because no
-    key is required to run ``aileron verify`` — use ``verify-checkpoint`` for
+    key is required to run ``aileron verify`` - use ``verify-checkpoint`` for
     the cryptographic guarantee. What this catches is the common, cheap case:
     a log that was truncated or rewritten while the checkpoint file that
     contradicts it was left in place. Without this, ``verify`` reports OK on a
@@ -178,12 +178,12 @@ def check_against_checkpoints(log_path: str) -> list[str]:
         if len(events) < count:
             problems.append(
                 f"log has {len(events)} events but a checkpoint attests to "
-                f"{count} — the journal appears truncated"
+                f"{count} - the journal appears truncated"
             )
         elif events[count - 1].get("hash") != tip:
             problems.append(
                 f"event at seq {count} does not match the checkpointed tip "
-                f"hash — the journal appears rewritten"
+                f"hash - the journal appears rewritten"
             )
     return problems
 

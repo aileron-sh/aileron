@@ -11,7 +11,7 @@ from .events import canonical_json, event_hash
 
 GENESIS_PREV_HASH = "0" * 64
 
-# Sentinel for "the chain is broken here" — it equals no real hash, so every
+# Sentinel for "the chain is broken here" - it equals no real hash, so every
 # subsequent event is reported as unverifiable rather than silently accepted
 # by resyncing to genesis.
 _BROKEN = object()

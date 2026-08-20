@@ -78,7 +78,7 @@ def test_event_hash_determinism():
     expected = hashlib.sha256(canonical(ev).encode("utf-8")).hexdigest()
     assert event_hash(ev) == expected
     # Non-ASCII is \u-escaped so canonical output is always pure ASCII and
-    # always encodable — a peer-supplied lone surrogate must not be able to
+    # always encodable - a peer-supplied lone surrogate must not be able to
     # raise inside the integrity check.
     ev["meta"]["x"] = "héllo"
     canon = canonical(ev)

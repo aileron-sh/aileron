@@ -1,6 +1,6 @@
 # Adoption metrics
 
-`history.jsonl` is an append-only record of this project's adoption signals —
+`history.jsonl` is an append-only record of this project's adoption signals -
 one JSON object per collection run, written by
 [`scripts/collect_metrics.py`](../scripts/collect_metrics.py) and committed by
 the daily [Metrics workflow](../.github/workflows/metrics.yml).
@@ -8,7 +8,7 @@ the daily [Metrics workflow](../.github/workflows/metrics.yml).
 ## Why it's a committed file rather than a dashboard
 
 GitHub's traffic API retains views and clones for **14 days only**. A day that
-is never snapshotted cannot be recovered — not by querying later, not by
+is never snapshotted cannot be recovered - not by querying later, not by
 asking support. Everything else here (stars, downloads, contributors) can be
 sampled at any time; traffic cannot. So the record is taken daily and stored
 in-repo, where each entry also carries a git commit date as independent
@@ -31,7 +31,7 @@ longer than that is permanent.
 
 ## Honesty properties
 
-These matter more than the numbers themselves — a metric that flatters the
+These matter more than the numbers themselves - a metric that flatters the
 project is worth less than one that can be trusted.
 
 - **Maintainers are excluded from "external" counts.** `external_contributor_count`
@@ -55,7 +55,7 @@ endpoints require a *user* token with `repo` scope; the Actions
 also the only field that expires, so this is the one piece of setup that
 actually matters.
 
-1. Create a token — either a classic PAT with `repo` scope, or a fine-grained
+1. Create a token - either a classic PAT with `repo` scope, or a fine-grained
    token limited to this repository with **Administration: Read** and
    **Contents: Read**.
 2. Add it to the repository as a secret named `METRICS_TOKEN`
@@ -65,7 +65,7 @@ The workflow falls back to `GITHUB_TOKEN` when the secret is absent, which
 collects everything *except* traffic and marks the run failed so the gap is
 visible rather than silent.
 
-Until the secret exists, capture traffic by hand — this works today and
+Until the secret exists, capture traffic by hand - this works today and
 backfills the last 14 days:
 
 ```console

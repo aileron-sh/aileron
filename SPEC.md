@@ -1,4 +1,4 @@
-# Aileron — SPEC (single source of truth)
+# Aileron - SPEC (single source of truth)
 
 Aileron is an open-source (Apache-2.0) "flight recorder for AI agents": tamper-evident,
 hash-chained audit logging of agent actions, Sigma-like policy rules with block/alert
@@ -78,7 +78,7 @@ def decide(event, rules) -> Decision       # any block -> block (first wins); el
 SEVERITY_ORDER = ["low","medium","high","critical"]
 ```
 Enforcement contract: SDK and proxy ALWAYS attach tool.arguments to the
-in-memory event before decide(), regardless of capture_content — content
+in-memory event before decide(), regardless of capture_content - content
 matchers must fire in digest-only mode. ChainLog.append strips content from
 the persisted copy. capture_content controls persistence, never enforcement.
 
@@ -104,7 +104,7 @@ def track_agent(name, framework, log) -> AgentSession  # context manager emittin
 Default global log path: env `AILERON_LOG` or `./aileron.chain.jsonl`.
 
 ## MCP stdio proxy (proxy.py)
-Speaks JSON-RPC 2.0 over stdin/stdout (newline-delimited and Content-Length framed — support both).
+Speaks JSON-RPC 2.0 over stdin/stdout (newline-delimited and Content-Length framed - support both).
 Spawns child: `argv` after `--`. Logs every `tools/call` request/response as tool_call events
 (tool.name = params.name, args digest from params.arguments; args attached in memory for policy).
 Policy block -> JSON-RPC error (-32000, "blocked by aileron rule <id>") returned to client, child

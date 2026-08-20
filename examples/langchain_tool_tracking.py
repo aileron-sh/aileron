@@ -5,7 +5,7 @@ can try it before installing anything:
 
     PYTHONPATH=src python3 examples/langchain_tool_tracking.py
 
-It duck-types the two LangChain interfaces that matter for instrumentation —
+It duck-types the two LangChain interfaces that matter for instrumentation -
 a tool object with a ``.run(...)``/callable body, and an agent "run" that
 invokes tools. With real LangChain installed, the only change is the import:
 
@@ -39,7 +39,7 @@ LOG_PATH = "langchain_demo.chain.jsonl"
 
 
 # ---------------------------------------------------------------------------
-# 1. Tool functions — the things your agent is allowed to do.
+# 1. Tool functions - the things your agent is allowed to do.
 #    In real LangChain these would be @tool-decorated functions or
 #    StructuredTool instances; Aileron wraps the same callables.
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def read_file(path: str) -> str:
 
 @track(tool_name="shell", log=log, rules=rules)  # tool_name overrides __name__
 def shell(cmd: str) -> str:
-    """Pretend shell — intercepted by rules/examples/destructive-shell.yml."""
+    """Pretend shell - intercepted by rules/examples/destructive-shell.yml."""
     return f"<ran: {cmd}>"
 
 
