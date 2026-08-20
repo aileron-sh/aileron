@@ -7,7 +7,7 @@ Apache-2.0, pure Python ≥3.10, two runtime dependencies (`pyyaml`, `cryptograp
 This is a **security tool that is published on PyPI**. Changes here are changes to something people
 rely on to tell them what their agents did. Bias toward correctness and honesty over speed.
 
-## The three invariants
+## The four invariants
 
 Break any of these and the product is no longer what it claims to be.
 
@@ -18,7 +18,15 @@ Break any of these and the product is no longer what it claims to be.
 2. **`capture_content` gates persistence, not enforcement.** Policy rules and the anomaly detector
    always see the full call in memory; `ChainLog.append` strips content from the copy it writes.
    Rules must fire in the default digest-only mode.
-3. **A checkpoint signs a prefix.** Appending after signing stays valid; truncating or rewriting
+3. **A prefilter may only ever skip work, never a detection.** `prefilter.py`
+   lets the policy engine skip a rule's regex when the payload provably cannot
+   match it. Wrongly skipping is a rule that silently stops firing and a journal
+   that looks clean, so everything there is deliberately lopsided: anything not
+   understood returns `None`, meaning "run the regex". `fold()` is proven sound
+   over every Unicode codepoint by a test, because `str.lower()` and
+   `str.casefold()` are both quietly wrong against `re.IGNORECASE`. Set
+   `AILERON_NO_PREFILTER=1` to rule it out during an investigation.
+4. **A checkpoint signs a prefix.** Appending after signing stays valid; truncating or rewriting
    the signed prefix does not. Checkpoints are chained to each other (`index`,
    `prev_checkpoint_hash`).
 
@@ -40,6 +48,7 @@ src/aileron/
   events.py    schema, canonical JSON, hashing      chainlog.py  append-only chain + verify
   signing.py   Ed25519 checkpoints                  policy.py    Sigma-like YAML rules
   detect.py    behavioral baselines                 sdk.py       @track / track_agent
+  prefilter.py regex literal prefilter (speed only)
   proxy.py     MCP stdio proxy (enforcement)        otel.py      OTel + OTLP export
   report.py    single-file HTML report              cli.py       argparse CLI
   rules/examples/   bundled starter rules (shipped as package data)
@@ -52,7 +61,7 @@ tests/         one file per module
 ## Working here
 
 ```console
-$ python -m pytest tests/ -q          # must stay green (117+ tests)
+$ python -m pytest tests/ -q          # must stay green (244+ tests)
 $ python scripts/benchmark.py         # proxy overhead; CI fails on >2x median regression
 ```
 

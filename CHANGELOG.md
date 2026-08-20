@@ -10,6 +10,33 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
 ### Performance
 
+- **Rules now skip their own regex when the payload cannot possibly match it.**
+  A rule looking for `auditctl` cannot fire on a payload that does not contain
+  the text `auditctl` anywhere, but it was scanning every byte to find that out.
+  Each pattern is read once and reduced to a set of literals it requires, and a
+  substring search decides whether the regex runs at all. On a benign 32 KB call
+  17 of the 19 patterns that used to scan are now skipped.
+
+  This is a speed change only, and the risk is entirely one-sided: skipping a
+  regex that would have matched is a rule that silently stops firing. So
+  anything the extractor does not fully understand returns "no prefilter, run
+  the regex", and `AILERON_NO_PREFILTER=1` turns the whole thing off.
+
+  The case folding is the subtle part. The prefilter needs a case-insensitive
+  containment test that agrees with `re.IGNORECASE`, and neither obvious choice
+  does. `str.lower()` misses U+017F, and `str.casefold()` misses U+0131 and
+  splits multi-character literals apart on U+0130, which casefolds to two
+  codepoints. Exactly four codepoints in Unicode are case-equal to an ASCII
+  character; a test proves over all 1,114,112 of them that every one folds to
+  exactly the character it is equal to.
+
+  Verified by a differential test over every example in the rule pack, a
+  property test on generated patterns, and a mutation fuzz that starts from
+  inputs the rules must catch and checks the invariant on 25,000 mutants that
+  still match. None of them found a verdict difference.
+
+### Performance
+
 - **Each matched path is now rendered to text once per decision, not once per
   rule.** Every content clause used to re-serialize the same value before
   searching it, so cost scaled with rule count multiplied by payload size. With

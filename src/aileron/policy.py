@@ -30,6 +30,7 @@ from pathlib import Path
 
 import yaml
 
+from . import prefilter
 from .events import canonical_json
 
 SEVERITY_ORDER = ["low", "medium", "high", "critical"]
@@ -79,7 +80,7 @@ def _haystack(
     path: str,
     cache: dict | None,
     *,
-    lower: bool = False,
+    form: str = "raw",
 ) -> tuple[bool, str]:
     """Resolve a dotted path and render it as searchable text, memoized.
 
@@ -98,15 +99,19 @@ def _haystack(
     describes, so it cannot serve one event's text for another. Callers may
     pass None, which simply computes every time.
     """
-    key = (path, lower)
+    key = (path, form)
     if cache is not None:
         hit = cache.get(key)
         if hit is not None:
             return hit
 
-    if lower:
+    if form == "lower":
         found, text = _haystack(event, path, cache)
         entry = (found, text.lower())
+    elif form == "fold":
+        # Only used to decide whether a regex can be skipped; see prefilter.
+        found, text = _haystack(event, path, cache)
+        entry = (found, prefilter.fold(text))
     else:
         found, value = _lookup(event, path)
         if not found or value is None:
@@ -138,7 +143,7 @@ def _clause_matches(
 
     if key.endswith(_CONTAINS_SUFFIX):
         path = key[: -len(_CONTAINS_SUFFIX)]
-        found, hay = _haystack(event, path, cache, lower=True)
+        found, hay = _haystack(event, path, cache, form="lower")
         if not found:
             return False
         needles = clause_value if isinstance(clause_value, list) else [clause_value]
@@ -151,6 +156,18 @@ def _clause_matches(
         found, hay = _haystack(event, path, cache)
         if not found:
             return False
+
+        # Most calls cannot possibly match most rules. Asking the cheap
+        # question first turns roughly twenty full scans of the payload into
+        # a handful of substring searches. can_skip only says yes when it has
+        # proven the pattern cannot match, so this changes speed, not verdicts.
+        _, folded = _haystack(event, path, cache, form="fold")
+        seen = None
+        if cache is not None:
+            seen = cache.setdefault(("literals", path), {})
+        if prefilter.can_skip(clause_value, folded, seen):
+            return False
+
         try:
             return re.search(clause_value, hay) is not None
         except re.error:
