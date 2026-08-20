@@ -112,8 +112,9 @@ a blocked write never reaches the server, and the journal verifies. That check
 ships as a test (`tests/test_real_mcp_server.py`, run with
 `AILERON_LIVE_MCP=1`).
 
-Mediation costs **sub-millisecond median overhead per `tools/call`, verified
-on commodity hardware** - see [Performance](#performance).
+The proxy itself costs **well under a millisecond per `tools/call`**.
+Matching content rules against large payloads costs more, and how much is
+yours to choose: see [Performance](#performance) for the split, measured.
 
 The proxy speaks both newline-delimited and `Content-Length`-framed
 JSON-RPC. Content rules
@@ -203,21 +204,27 @@ trusted third party.
 
 ## Performance
 
-Aileron adds **sub-millisecond median overhead per `tools/call`, verified on
-commodity hardware.** Every number below is reproducible with one command:
+The proxy itself adds **well under a millisecond** per `tools/call`, and that
+cost barely grows with payload size. Rule evaluation is a **separate** cost
+that depends on how many content rules you load, and with the full 32-rule
+bundled pack it is far larger than the proxy on big payloads. The two are
+reported separately below, because they scale differently and you choose your
+own rules.
+
+Every number is reproducible with one command:
 
 ```console
 $ python scripts/benchmark.py
 ```
 
 **Method.** [`scripts/benchmark.py`](scripts/benchmark.py) drives an identical
-stdio MCP child server two ways - directly, and through `aileron proxy` - and
-subtracts. The delta is the proxy's true cost, so you never have to trust an
-absolute figure. The absolute baseline is printed alongside it so the
-subtraction can be checked. 2,000 sequential calls per configuration after 200
-discarded warmup calls; rules loaded; digest-only journaling. Overhead covers
-JSON-RPC parsing, policy evaluation, hash-chain append, re-serialization, and
-the extra process hop.
+stdio MCP child server three ways - directly, through `aileron proxy` with no
+rules, and through `aileron proxy` with all 32 bundled rules - and subtracts.
+The deltas are the proxy's true cost, so you never have to trust an absolute
+figure. The absolute baseline is printed alongside so the subtraction can be
+checked. 2,000 sequential calls per configuration after 200 discarded warmup
+calls; digest-only journaling. Overhead covers JSON-RPC parsing, policy
+evaluation, hash-chain append, re-serialization, and the extra process hop.
 
 ### Added latency per `tools/call` (milliseconds)
 
@@ -225,45 +232,63 @@ the extra process hop.
 3.12.13. Re-measured by CI on every push:
 [![Benchmark](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml/badge.svg)](https://github.com/Aileron-sh/aileron/actions/workflows/benchmark.yml)
 
-| tool arguments | direct (baseline) median | + proxy & rules median | **added median** | added p95 |
-|---|---|---|---|---|
-| 64 B | 0.051 | 0.315 | **0.264** | 0.280 |
-| 4 KB | 0.064 | 0.370 | **0.306** | 0.353 |
-| 32 KB | 0.171 | 0.800 | **0.629** | 0.668 |
+| tool arguments | direct | through proxy | + 32 rules | added by proxy | added by rules | **added total** |
+|---|---|---|---|---|---|---|
+| 64 B | 0.041 | 0.183 | 0.340 | 0.142 | 0.158 | **0.299** |
+| 4 KB | 0.054 | 0.216 | 3.100 | 0.162 | 2.884 | **3.046** |
+| 32 KB | 0.172 | 0.552 | 23.193 | 0.380 | 22.641 | **23.021** |
 
-**macOS arm64** - Apple M2 Pro, Python 3.13.7, idle machine. Each row is the
-worst of three passes, so these are pessimistic rather than cherry-picked:
+**macOS arm64** - Apple M2 Pro, Python 3.13.7, idle machine. The worst of
+three passes, quoted whole, so these are pessimistic rather than cherry-picked
+and `added = (proxy & rules) - direct` holds exactly within the run:
 
-| tool arguments | direct (baseline) median | + proxy & rules median | **added median** | added p95 |
-|---|---|---|---|---|
-| 64 B | 0.0133 | 0.1003 | **0.0870** | 0.183 |
-| 4 KB | 0.0290 | 0.1811 | **0.1521** | 0.250 |
-| 32 KB | 0.1375 | 0.5227 | **0.3852** | 0.468 |
+| tool arguments | direct | through proxy | + 32 rules | added by proxy | added by rules | **added total** |
+|---|---|---|---|---|---|---|
+| 64 B | 0.013 | 0.100 | 0.196 | 0.087 | 0.096 | **0.183** |
+| 4 KB | 0.029 | 0.126 | 1.763 | 0.097 | 1.637 | **1.734** |
+| 32 KB | 0.132 | 0.411 | 12.463 | 0.279 | 12.052 | **12.331** |
 
-All values are milliseconds. Every row comes from a **single run**, so
-`added = (proxy & rules) − direct` holds exactly and you can check the
-subtraction. The tool reports mean / median / p95 / p99; these tables quote
-median and p95.
+### What these numbers mean
 
-Medians are stable across runs (64 B measured 0.087 / 0.085 / 0.087 ms over
-three passes); **p95 is not** - tail latency on a desktop OS swings with
-scheduling, and a single pass can look 40% better or worse than its
-neighbour. Treat the median as the number and the p95 as an order of
-magnitude. Linux is roughly 3× slower than the Mac because a shared-vCPU CI
-runner is the slower machine - those are the conservative figures, and the
-ones CI enforces.
+**The proxy is cheap and nearly flat.** Interception, journaling, and
+re-serialization cost about 0.14 ms on a small call and about 0.38 ms on a
+32 KB one, on the slowest hardware tested.
 
-**Caveats, stated plainly.** These are *sequential* stdio round-trips - one
+**Rules are where the time goes, and the cost is yours to choose.** Content
+rules are matched against the whole payload, so their cost scales with payload
+size multiplied by the number of rules that reach a content match. On an
+ordinary `read_file` call, 19 of the 30 content patterns in the bundled pack
+scan the full payload. With everything loaded that is 22.6 ms at 32 KB.
+
+**In practice most tool calls are small.** At 64 B the whole thing, proxy plus
+all 32 rules, is 0.30 ms. A real MCP server call is typically 10 to 1000 ms,
+so mediation there is a rounding error.
+
+**At 32 KB with the full pack it is not a rounding error**, and this README is
+not going to pretend otherwise: 23 ms is real latency. Three things to know
+about it. It is rule evaluation, not the enforcement path, so it costs speed
+and not any security property. You can cut it directly, by loading fewer rules
+with `--rules` or by giving a rule a cheap `tool.name_contains` clause so an
+expensive pattern never runs on calls it cannot match. And it is fixable:
+prefiltering patterns by a required literal would skip most scans on benign
+traffic, tracked in [#1](https://github.com/Aileron-sh/aileron/issues/1).
+
+**Caveats, stated plainly.** These are *sequential* stdio round-trips, one
 call in flight at a time, which is how an agent actually calls tools. This is
 not a concurrent-client benchmark; a many-client run is on the roadmap.
-Overhead grows with argument size because hashing, digesting, and
-re-serialization are all linear in payload. For context, a real MCP server
-call is typically 10–1000 ms, so mediation costs well under 1% of it. Measure
-on your own hardware before quoting a number.
+The tool reports mean, median, p95 and p99; these tables quote medians,
+because medians are stable across runs and **p95 is not** - tail latency on a
+desktop OS swings with scheduling, and a single pass can look 40% better or
+worse than its neighbour. Linux is the slower machine
+because a shared-vCPU CI runner is slower than an idle laptop, and those are
+the conservative figures CI enforces. Measure on your own hardware before
+quoting a number.
 
-CI enforces this: a job fails if median overhead regresses more than 2× against
+CI enforces this: a job fails if median overhead regresses more than 2x against
 [`scripts/benchmark_baseline.json`](scripts/benchmark_baseline.json), so
-performance cannot decay silently.
+performance cannot decay silently. The baseline records the rule-pack size it
+was measured against, because comparing a 32-rule run to a 2-rule baseline
+reports a regression that is not there.
 
 ## Integrations & ecosystem
 

@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [Unreleased]
+
+### Performance
+
+- **Each matched path is now rendered to text once per decision, not once per
+  rule.** Every content clause used to re-serialize the same value before
+  searching it, so cost scaled with rule count multiplied by payload size. With
+  the 32-rule pack that was 41 renders of the same arguments per call. Worth
+  about 6% at 32 KB on CI; the value is removing the quadratic factor as packs
+  grow, not the immediate saving. Pinned by a test asserting a single render per
+  decision and a differential test requiring memoized and unmemoized evaluation
+  to return the same action and rule ids.
+
+### Changed
+
+- The benchmark records the bundled rule count and reports when a comparison
+  spans different pack sizes. Growing the pack from 2 rules to 32 in 0.1.4 made
+  CI report a 39x proxy regression that did not exist: content rules match
+  against the whole payload, so the workload had changed, not the code. It
+  still fails the run, because a bigger pack is a real cost that should be
+  re-recorded deliberately rather than waved through.
+
+### Documentation
+
+- **The performance section reports the proxy's cost and the rule pack's cost
+  separately, and the headline no longer claims sub-millisecond overhead for
+  the bundled pack.** That claim was measured when 2 rules shipped. With 32 it
+  is 0.30 ms at 64 B but 23 ms at 32 KB, essentially all of it rule evaluation;
+  the proxy itself stays between 0.14 and 0.38 ms. Anyone running the
+  documented benchmark command would have seen the difference immediately, so
+  the README now states it, explains that the cost is rule evaluation rather
+  than the enforcement path, and says how to reduce it.
+
 ## [0.1.4] - 2026-08-20
 
 ### Added
