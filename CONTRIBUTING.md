@@ -15,6 +15,22 @@ $ python3 -m venv .venv && source .venv/bin/activate
 $ pip install -e ".[dev]"
 ```
 
+## Enable the pre-commit hook
+
+This repository enforces its own layout. Tools that write into a working tree
+— agent harnesses, editors, codegen — regularly drop directories nobody asked
+for, and this repo is public, so a stray commit is a real cost.
+
+```console
+$ git config core.hooksPath scripts/hooks
+```
+
+The hook refuses any staged path whose top-level entry is not in the
+allowlist in `scripts/hooks/pre-commit`, and refuses key/journal/`.env`
+patterns anywhere even if force-added. If you add a legitimate new top-level
+entry, extend the allowlist in the same commit. For a deliberate one-off,
+`git commit --no-verify`.
+
 ## Running tests
 
 ```console
