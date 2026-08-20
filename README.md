@@ -46,7 +46,7 @@ journal on disk contains only argument digests - never the raw command.
 |---|---|
 | Hash-chained journal | Append-only JSONL; each event's `prev_hash` links to the previous event's SHA-256 hash; genesis is `0x00…00` |
 | Signed checkpoints | Ed25519 signature over the chain tip, verifiable offline against the public key (`aileron sign-checkpoint` / `verify-checkpoint`). Checkpoints cover a *prefix*: appending later events never invalidates them; truncating or rewriting the signed prefix does |
-| Policy rules | Sigma-like YAML (bundled `rules/examples/`); substring, regex, and dotted-key matchers. Rules are evaluated against the full call **in memory**, so content rules fire even in digest-only mode |
+| Policy rules | **32 bundled rules** covering credential theft, cloud metadata abuse, exfiltration, supply chain, persistence, anti-forensics, database destruction, and prompt-injection artifacts. Sigma-like YAML; substring, regex, and dotted-key matchers. Rules are evaluated against the full call **in memory**, so content rules fire even in digest-only mode |
 | Behavioral anomaly detection | Rolling baselines flag first-seen tools, rate spikes (>3x baseline), and novel tool-call sequences - live via the SDK (`baseline=`) or offline via `aileron detect` |
 | MCP stdio proxy | Sits between any MCP client and server; logs and mediates every `tools/call` before it reaches the child process |
 | OTel GenAI export | Events export as `gen_ai.*`-aligned span dicts (`aileron export`) for your existing collector |

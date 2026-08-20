@@ -1,0 +1,16 @@
+# One idea, two mechanisms for the same end: killing the host's audit trail.
+# It fires on stopping, disabling, masking, or killing
+# auditd/rsyslog/syslog-ng/systemd-journald, on flushing audit rules with
+# `auditctl -D` or `-e 0`, on purging the journal with `journalctl
+# --vacuum-*`, and on rm/shred/truncate/redirect against /var/log or the
+# specific incriminating logs (auth, secure, audit, wtmp, btmp, lastlog).
+# Reading, tailing, grepping, or rotating logs normally does not match. Alert
+# rather than block because sysadmins legitimately stop log daemons and vacuum
+# disk space.
+id: aileron-162
+title: Alert on host audit logs being wiped or audit daemons stopped
+severity: high
+match:
+  type: tool_call
+  tool.arguments_regex: '(?i)(\bauditctl +-[De]\b|journalctl +[^;&|]{0,20}--vacuum|(systemctl|service)[^;&|]{0,30}(stop|disable|mask)[^;&|]{0,20}(auditd|rsyslog|syslog-ng|systemd-journald)|(systemctl|service)[^;&|]{0,20}(auditd|rsyslog|syslog-ng|systemd-journald)[^;&|]{0,20}(stop|disable|mask)|(pkill|killall)[^;&|]{0,20}(auditd|rsyslogd|syslog-ng)|(\brm\b|\bshred\b)[^;&|]{0,30}/var/log\b|(\btruncate\b|\bcat +/dev/null|>)[^;&|]{0,40}/var/log/(auth|secure|audit|syslog|messages|wtmp|btmp|lastlog|kern|sudo))'
+action: alert

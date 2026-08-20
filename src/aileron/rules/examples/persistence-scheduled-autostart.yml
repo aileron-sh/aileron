@@ -1,0 +1,27 @@
+# Handing the OS scheduler or service manager a job is the most durable
+# persistence available on a host: cron, a systemd unit, or a LaunchAgent
+# plist all re-run the payload after reboot. The rule fires on installation
+# (crontab piped from stdin, a redirect or tee into a cron/systemd/launchd
+# path, or a write tool carrying a payload for one of those paths), not on
+# inspection, so crontab -l, systemctl status, and reading a unit file stay
+# quiet. It deliberately does not match bare systemctl enable or launchctl
+# load, since enabling an installed service is ordinary dev work and the file
+# write that precedes it is already caught.
+id: aileron-153
+title: Alert on new cron, systemd, or launchd autostart entries being installed
+severity: high
+match:
+  type: tool_call
+  tool.arguments_contains:
+    - "crontab -"
+    - "| crontab"
+    - "/etc/cron"
+    - "/var/spool/cron"
+    - "/crontabs"
+    - "/etc/systemd/system"
+    - "/lib/systemd/system"
+    - ".config/systemd/user"
+    - "launchagents"
+    - "launchdaemons"
+  tool.arguments_regex: '(?i)(crontab\s+-(?!l)|\|\s*crontab|>{1,2}\s*[^\s"]{0,60}(/etc/cron|/var/spool/cron|/crontabs|/systemd/|launchagents|launchdaemons)|\btee\b[^"]{0,60}(/etc/cron|/var/spool/cron|/crontabs|/systemd/|launchagents|launchdaemons)|"(content|contents|text|data|file_text|new_str|new_string)")'
+action: alert

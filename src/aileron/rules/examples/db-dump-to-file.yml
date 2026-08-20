@@ -1,0 +1,23 @@
+# A whole database landing in a file on disk is the usual first half of an
+# exfiltration, and it is worth a line in the report even when it is a backup.
+# The two clauses are AND-ed on purpose: naming a dump tool is not enough, the
+# call must also show an output destination, which is what keeps `which
+# mysqldump` and a schema-only pipe into a staging database quiet. Alert only,
+# since scheduled backups and local restores from prod are routine.
+id: aileron-172
+title: Database dumped to a file with pg_dump/mysqldump/mongodump
+severity: high
+match:
+  type: tool_call
+  tool.arguments_regex: '(?i)\b(pg_dump|pg_dumpall|mysqldump|mariadb-dump|mongodump)\b'
+  tool.arguments_contains:
+    - "--file"
+    - "--result-file"
+    - "--out"
+    - "-f "
+    - "-o "
+    - ">"
+    - ".sql"
+    - ".dump"
+    - ".archive"
+action: alert

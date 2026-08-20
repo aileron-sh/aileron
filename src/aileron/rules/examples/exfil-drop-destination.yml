@@ -1,0 +1,47 @@
+# Destination-based detection: whatever the agent is sending, sending it to a
+# burner webhook collector, an anonymous one-shot file host, an out-of-band
+# callback domain, or a Telegram/Discord bot endpoint is the classic exfil
+# egress. It matches on arguments alone so it works for shell curl, an MCP
+# fetch/http_request tool, and even a script being written to disk. Precision
+# comes from the list itself: the ambiguous .sh/.io hosts are written with a
+# leading '//' so a local script named transfer.sh never fires, and only the
+# write APIs of paste sites are listed so fetching a raw paste does not.
+id: aileron-131
+title: Outbound call to an anonymous file drop, paste, tunnel, or OOB callback host
+severity: high
+match:
+  type: tool_call
+  # Destinations that show up in exfiltration and almost never in a product's
+  # own traffic. Deliberately NOT listed: hooks.slack.com (real teams post CI
+  # notifications there all day) and bare pastebin.com (reading a raw paste is
+  # a supply-chain concern, not exfiltration)
+  tool.arguments_contains:
+    - "webhook.site"
+    - "requestbin"
+    - "pipedream.net"
+    - "beeceptor.com"
+    - "ngrok.io"
+    - "ngrok-free.app"
+    - "trycloudflare.com"
+    - "loca.lt"
+    - "serveo.net"
+    - "burpcollaborator.net"
+    - "oast.fun"
+    - "oast.pro"
+    - "oastify.com"
+    - "dnslog.cn"
+    - "//transfer.sh"
+    - "//file.io"
+    - "//0x0.st"
+    - "gofile.io"
+    - "anonfiles.com"
+    - "bashupload.com"
+    - "termbin.com"
+    - "tmpfiles.org"
+    - "pastebin.com/api"
+    - "paste.ee/api"
+    - "hastebin.com/documents"
+    - "api.telegram.org/bot"
+    - "discord.com/api/webhooks"
+    - "discordapp.com/api/webhooks"
+action: alert

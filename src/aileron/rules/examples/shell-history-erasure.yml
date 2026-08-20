@@ -1,0 +1,15 @@
+# Catches the classic cover-your-tracks move: wiping the history file
+# (rm/shred/truncate/redirect over ~/.bash_history, ~/.zsh_history,
+# ~/.psql_history and friends), flushing it in-session with `history -c`, or
+# turning recording off for the rest of the session via `unset HISTFILE`,
+# `HISTFILE=/dev/null`, `HISTSIZE=0`, or `set +o history`. It is
+# arguments-only so it fires no matter what the shell tool is named. Alert
+# rather than block: developers do occasionally clear their own history, and a
+# false block would kill a live session.
+id: aileron-161
+title: Alert on shell history being cleared, deleted, or disabled
+severity: high
+match:
+  type: tool_call
+  tool.arguments_regex: '(?i)(\bhistory +-[a-z]{0,3}c|\bunset +HIST|HISTFILE= *(/dev/null)?[ "'']|HISTSIZE= *0|HISTFILESIZE= *0|set \+o +history|(\brm\b|\bshred\b|\bunlink\b|\btruncate\b|>)[^;&|]{0,40}[._](bash|zsh|sh|ksh|ash|fish|psql|python|node_repl|mysql)_history)'
+action: alert

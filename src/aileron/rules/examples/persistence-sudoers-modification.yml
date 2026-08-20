@@ -1,0 +1,15 @@
+# Dropping a NOPASSWD line into /etc/sudoers.d is the standard one-line
+# privilege escalation, and it persists across reboots. Modification is the
+# signal rather than the NOPASSWD keyword itself, because an auditor grepping
+# for NOPASSWD must not fire; the redirect and tee branches are anchored to a
+# sudoers target so redirecting a read elsewhere stays quiet.
+id: aileron-151
+title: Alert on modifications to /etc/sudoers or a file under sudoers.d
+severity: critical
+match:
+  type: tool_call
+  tool.arguments_contains:
+    - "/etc/sudoers"
+    - "sudoers.d"
+  tool.arguments_regex: '(?i)(>{1,2}\s*[^\s"]{0,60}sudoers|\btee\b[^"]{0,60}sudoers|\bsed\s+-i\b|"(content|contents|text|data|file_text|new_str|new_string)")'
+action: alert

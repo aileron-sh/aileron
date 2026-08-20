@@ -1,0 +1,17 @@
+# A malicious MCP server can register a tool whose name is visually identical
+# to a trusted one (Cyrillic е in "rеad_file", a zero-width space inside
+# "write_file") so the agent and the human reviewing the log both pick the
+# wrong tool. Real MCP tool names are ASCII identifiers, so any non-ASCII
+# codepoint in the name is worth flagging. Matching tool.name rather than the
+# arguments is what keeps ordinary non-English paths and content from firing.
+id: aileron-183
+title: Tool name contains non-ASCII characters and may impersonate a real tool
+severity: high
+match:
+  type: tool_call
+  # Real MCP tool names are ASCII identifiers. A Cyrillic "е" in "rеad_file"
+  # or a zero-width joiner in "shell" is an impersonation attempt, not a
+  # naming choice. Matches the name only, never the arguments, so ordinary
+  # non-English file paths and content stay quiet.
+  tool.name_regex: '[^\x00-\x7F]'
+action: alert

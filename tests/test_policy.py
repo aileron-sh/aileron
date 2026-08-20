@@ -220,17 +220,19 @@ def test_example_rules_are_wellformed_and_functional():
     from aileron import bundled_rules_dir
 
     rules = load_rules(bundled_rules_dir())
-    assert {r.id for r in rules} == {"aileron-001", "aileron-002"}
+    # The pack grows over time; these two are the originals and must stay.
+    # tests/test_rule_pack.py checks each rule against its own examples.
+    assert {"aileron-001", "aileron-002"} <= {r.id for r in rules}
 
     destructive = make_event(**{"tool.arguments": {"cmd": "rm -rf / --no-preserve-root"}})
     d = decide(destructive, rules)
     assert d.action == "block"
-    assert d.rule_ids == ["aileron-001"]
+    assert "aileron-001" in d.rule_ids
 
     exfil = make_event(**{"tool.name": "read_file", "tool.arguments": {"path": "~/.ssh/id_rsa"}})
     d2 = decide(exfil, rules)
     assert d2.action == "alert"
-    assert d2.rule_ids == ["aileron-002"]
+    assert "aileron-002" in d2.rule_ids
 
     benign = make_event(**{"tool.arguments": {"cmd": "ls -la"}})
     assert decide(benign, rules).action == "allow"

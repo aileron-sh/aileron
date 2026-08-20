@@ -1,0 +1,15 @@
+# Catches the classic `curl https://... | sh` bootstrap, where code the agent
+# never read is fetched and executed in one step, with no chance to inspect or
+# pin it. It stays `alert` rather than `block` because rustup, uv, nvm, deno
+# and homebrew all ship this as their official install line, so a developer
+# may well mean it. The interpreter must appear immediately after the pipe,
+# which keeps `| ssh host`, `| sha256sum` and `| jq` out; the tool-name guard
+# keeps it off documentation writes that merely quote an install command.
+id: aileron-140
+title: Alert when a downloaded file is piped straight into a shell or interpreter
+severity: high
+match:
+  type: tool_call
+  tool.name_regex: '(?i)(shell|bash|zsh|exec|command|run|terminal|process|script)'
+  tool.arguments_regex: '(?i)\b(curl|wget|iwr|invoke-webrequest)\b[^|]{0,300}\|\s{0,8}(sudo\s{1,4})?(/usr/bin/env\s{1,4})?(bash|sh|zsh|ksh|dash|fish|python3?|perl|ruby|node)\b'
+action: alert

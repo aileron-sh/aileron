@@ -1,0 +1,17 @@
+# Encoding data immediately before it leaves the box is an obfuscation step,
+# not a transport need, and it defeats naive content inspection of the
+# outbound body. This fires on the two real shapes (base64 piped into a
+# network client, and base64 inside a curl request body) regardless of what
+# file was read, so it covers exfil of data that no filename-based rule would
+# flag. Direction matters: the rule requires the encode to feed the send, so
+# the very common download-then-decode (`curl ... | base64 -d`) stays silent.
+id: aileron-132
+title: Data base64-encoded on the way into an outbound request
+severity: high
+match:
+  type: tool_call
+  # Branch 1: base64 output piped straight into a network client.
+  # Branch 2: base64 inside the request body of curl/wget/httpie.
+  # Downloading and decoding (curl ... | base64 -d) matches neither.
+  tool.arguments_regex: '(?i)(\bbase64\b[^|]{0,150}\|[^|]{0,80}\b(curl|wget|ncat|netcat|nc|socat|httpie)\b|\b(curl|wget|httpie)\b[^\n]{0,150}(--data-binary|--data-raw|--data|--form|-d |-F )[^\n]{0,80}\bbase64\b)'
+action: alert

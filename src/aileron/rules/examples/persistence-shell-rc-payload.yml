@@ -1,0 +1,20 @@
+# A line added to .bashrc or .zshrc re-executes on every new shell, which is
+# how an agent-planted implant survives long after the session ends. Touching
+# an rc file is far too common to alert on by itself (every version-manager
+# installer appends to one), so the second clause requires an actual execution
+# payload: curl or wget piped to a shell, base64 -d, /dev/tcp, nc -e, or an
+# interactive bash.
+id: aileron-152
+title: Alert on a shell startup file gaining a download-and-execute or reverse-shell line
+severity: high
+match:
+  type: tool_call
+  tool.arguments_contains:
+    - ".bashrc"
+    - ".zshrc"
+    - ".bash_profile"
+    - ".profile"
+    - ".zshenv"
+    - "/etc/profile.d"
+  tool.arguments_regex: '(?i)((curl|wget)[^"]{0,120}\|[^"|]{0,20}\b(ba)?sh\b|base64\s+(-d|--decode)|/dev/tcp/|\bnc\s+-\w{0,3}e\b|\bbash\s+-i\b)'
+action: alert

@@ -1,0 +1,16 @@
+# Catches indirect prompt injection carried inside tool arguments: an agent
+# relaying poisoned web page text, issue bodies, or file content that tries to
+# override its operating instructions. The regex demands both an override verb
+# and a back-reference to prior instructions within a short bounded window, in
+# either word order, so the everyday appearance of the words "prompt" or
+# "instructions" in code and docs stays quiet.
+id: aileron-180
+title: Prompt-injection override phrasing inside tool arguments
+severity: high
+match:
+  type: tool_call
+  # Two-part test: an override verb AND a reference to prior instructions,
+  # in either word order. Mentioning "system prompt" or "instructions" on
+  # its own is normal developer work and does not fire.
+  tool.arguments_regex: '(?i)(ignore|disregard|forget|override)[^"]{0,40}((previous|prior|earlier|above)[^"]{0,20}(instruction|prompt|directive)|(instruction|prompt|directive)[^"]{0,20}(above|previously))'
+action: alert

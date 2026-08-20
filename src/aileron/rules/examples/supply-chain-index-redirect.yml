@@ -1,0 +1,15 @@
+# Redirecting the index is how dependency-confusion and typosquat payloads get
+# pulled under a name the lockfile appears to trust, and `--extra-index-url`
+# in particular lets an attacker-run mirror outrank the real package. A
+# negative lookahead exempts the four canonical public hosts so ordinary
+# installs never fire; a company's own Artifactory or devpi still alerts,
+# which is why severity is medium and the action is alert - the rule is meant
+# to be tuned by adding internal hosts to the exemption list.
+id: aileron-142
+title: Alert when a package install is pointed at a non-default index or registry
+severity: medium
+match:
+  type: tool_call
+  tool.name_regex: '(?i)(shell|bash|zsh|exec|command|run|terminal|process|script)'
+  tool.arguments_regex: '(?i)(--index-url|--extra-index-url|--default-index|--registry|PIP_INDEX_URL|UV_INDEX_URL|NPM_CONFIG_REGISTRY)[=:,\s"\\]{1,8}https?://(?!(pypi\.org|files\.pythonhosted\.org|registry\.npmjs\.org|registry\.yarnpkg\.com)([/:"\s\\]|$))'
+action: alert

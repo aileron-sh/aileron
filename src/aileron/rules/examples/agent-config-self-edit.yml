@@ -1,0 +1,21 @@
+# An agent touching the files that define its own permission allowlist, hook
+# scripts, MCP server list, or Aileron rule set is privilege escalation: it
+# rewrites what it is allowed to do next, or reads the rules to learn what to
+# route around. Paths are qualified by their parent directory so that ordinary
+# project files named settings.json or a .vscode config never match.
+id: aileron-181
+title: Agent reads or writes its own agent and MCP configuration
+severity: high
+match:
+  type: tool_call
+  # The files that decide what this agent is allowed to do: permission
+  # allowlists, hook scripts, the MCP server list, and Aileron's own rules.
+  tool.arguments_contains:
+    - ".claude/settings.json"
+    - ".claude/settings.local.json"
+    - ".claude/hooks"
+    - "claude_desktop_config.json"
+    - "mcp.json"
+    - "aileron.yml"
+    - ".aileron/"
+action: alert

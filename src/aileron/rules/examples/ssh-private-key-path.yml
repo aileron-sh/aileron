@@ -1,0 +1,12 @@
+# Catches a private key being read or copied, while staying quiet when the key
+# is simply being used to connect.
+id: aileron-113
+title: Private key file handled outside the normal ssh tooling
+severity: medium
+match:
+  type: tool_call
+  # Reading or copying a private key is worth a look. Using one is not, so the
+  # lookahead drops ssh/scp -i, ssh-add, ssh-keygen, chmod and chown, which are
+  # what an ordinary developer session looks like. .pub files are excluded too.
+  tool.arguments_regex: '(?i)^(?!.*(ssh-add|ssh-keygen|chmod|chown|ssh -i|scp -i)).*id_(rsa|dsa|ecdsa|ed25519)(?!\.pub)'
+action: alert

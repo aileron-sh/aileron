@@ -1,0 +1,20 @@
+# An agent that deletes, truncates, moves, or redirects the tamper-evident
+# chain journal, or touches the ed25519 signing key, is destroying the
+# evidence of everything else it did. Names are taken from the real surface
+# (aileron.chain.jsonl, aileron_ed25519.key, AILERON_LOG). The read-only
+# workflow the tool itself prints (aileron verify / report / sign against the
+# journal) carries no destructive verb and stays silent.
+id: aileron-182
+title: Tampering with Aileron's own audit journal or signing key
+severity: critical
+match:
+  type: tool_call
+  # Known limit: this can fire on documentation that quotes the delete
+  # command. That is rare, it is only an alert, and losing the journal
+  # is the single most incriminating thing an agent can do, so the
+  # trade is worth it.
+  # A destructive verb applied to the chain journal or the ed25519 signing
+  # key. The gap excludes ; & | " so a shell chain cannot bridge an
+  # unrelated rm into a later, harmless `aileron verify` on the journal.
+  tool.arguments_regex: '(?i)aileron_log=/dev/(null|zero)|(\brm\b|\bshred\b|\bunlink\b|\btruncate\b|\bmv\b|\bchmod\b|>)[^;&|"]{0,60}(aileron[^;&|"]{0,16}\.jsonl|aileron_ed25519)'
+action: alert

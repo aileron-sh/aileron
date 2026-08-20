@@ -1,0 +1,16 @@
+# Catches an agent tearing down real storage: DROP DATABASE, DROP SCHEMA ...
+# CASCADE, DROP TABLE, TRUNCATE TABLE, against any SQL tool or shell wrapper,
+# since it matches on arguments rather than a tool name. Requiring real
+# whitespace between the verb and the object is what keeps it off ORM
+# migration DSLs (op.drop_table, drop_table :legacy), and requiring the object
+# keyword keeps it off ALTER TABLE ... DROP COLUMN and DROP INDEX. It stays on
+# alert rather than block because dev and test teardown legitimately drops
+# databases and tables, and a false block would break the user's agent
+# mid-run.
+id: aileron-170
+title: Destructive database DDL (DROP DATABASE/SCHEMA/TABLE, TRUNCATE TABLE)
+severity: high
+match:
+  type: tool_call
+  tool.arguments_regex: '(?i)\b(drop\s+(database|schema|table)|truncate\s+table)\b'
+action: alert

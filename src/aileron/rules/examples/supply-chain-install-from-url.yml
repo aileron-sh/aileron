@@ -1,0 +1,35 @@
+# Installing straight from a git URL or a tarball/wheel URL bypasses the
+# registry's naming, signing and yanking, so a compromised or
+# attacker-controlled repo becomes runtime code with no lockfile entry to
+# review. The install verb is a separate `_contains` clause from the URL
+# pattern on purpose: canonical JSON sorts object keys, so in
+# `{"args":["install",...],"command":"pip"}` the manager name lands after the
+# verb, and an order-dependent single regex would miss the most common MCP
+# argument shape.
+id: aileron-141
+title: Alert on package installs from a VCS or URL instead of a package registry
+severity: high
+match:
+  type: tool_call
+  tool.name_regex: '(?i)(shell|bash|zsh|exec|command|run|terminal|process|script)'
+  tool.arguments_contains:
+    - "pip install"
+    - "pip3 install"
+    - "pipx install"
+    - "uv pip install"
+    - "uv add"
+    - "npm install"
+    - "npm i "
+    - "pnpm add"
+    - "pnpm install"
+    - "yarn add"
+    - "bun add"
+    - "bun install"
+    - "gem install"
+    - "cargo install"
+    - "poetry add"
+    - "go install"
+    - "composer require"
+    - "\"install\""
+  tool.arguments_regex: '(?i)(git\+[a-z]{2,8}://|git@[\w.-]{1,64}:[^\s",]{1,80}\.git|https?://[^\s",]{0,160}\.(whl|tgz|tar\.gz|zip|git)\b|https?://[^\s",]{0,160}(github\.com|gitlab\.com|bitbucket\.org|githubusercontent\.com))'
+action: alert

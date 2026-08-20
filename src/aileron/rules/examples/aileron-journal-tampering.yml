@@ -1,0 +1,19 @@
+# An agent that deletes, truncates, rewrites, or moves its own audit journal
+# (aileron.chain.jsonl), the signed checkpoint file next to it, or the ed25519
+# signing key is destroying the only evidence of what it did. The destructive
+# verb and the Aileron path must appear together without a shell separator
+# between them, so reading, verifying, backing up, or reporting on the journal
+# never fires. Blocking is safe here: nothing an agent legitimately needs to
+# do requires erasing the record of its own actions, and a human can still do
+# it at their own prompt.
+id: aileron-160
+title: Block deletion or rewriting of the Aileron journal, checkpoints, or signing key
+severity: critical
+match:
+  type: tool_call
+  tool.name_regex: '(?i)(shell|bash|exec|command|cmd|terminal|process|(^|_)sh($|_))'
+  tool.arguments_contains:
+    - "aileron"
+    - "checkpoints.jsonl"
+  tool.arguments_regex: '(?i)(\brm\b|\bshred\b|\bunlink\b|\btruncate\b|\bmv\b|\bdd\b|sed +-i|>)[^;&|]{0,60}(aileron[a-z0-9._-]*\.(jsonl|key|pub)|\.checkpoints\.jsonl|\.aileron\b|AILERON_LOG)'
+action: block

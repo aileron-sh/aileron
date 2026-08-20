@@ -1,0 +1,14 @@
+# Appending an attacker public key to ~/.ssh/authorized_keys is the classic
+# way an agent turns one tool call into permanent SSH access that survives the
+# session. The first clause pins the target file; the second requires evidence
+# of a write (public key material, an append redirect, tee, or a write-tool
+# payload key), so plain reads of the file do not fire.
+id: aileron-150
+title: Alert on writes or appends to an SSH authorized_keys file
+severity: critical
+match:
+  type: tool_call
+  tool.arguments_contains:
+    - "authorized_keys"
+  tool.arguments_regex: '(?i)(ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-nistp|>>|\btee\b|"(content|contents|text|data|file_text|new_str|new_string)")'
+action: alert

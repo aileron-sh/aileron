@@ -1,0 +1,16 @@
+# The classic agent disaster: it means to clear one row and wipes the table
+# instead. The negative lookahead scans forward from the table name only as
+# far as the next statement end (a semicolon or the closing JSON string
+# quote), so a WHERE on a later line still suppresses the alert, while DELETE
+# FROM t; SELECT ... WHERE ... is still caught on the unqualified DELETE. The
+# lookahead window is bounded at 400 characters on purpose: unbounded it was
+# quadratic, and an argument blob of repeated "delete from a " took 33 seconds
+# to evaluate. Alert, not block, because clearing a scratch or staging table
+# on purpose is ordinary developer work.
+id: aileron-171
+title: DELETE or UPDATE with no WHERE clause (whole-table write)
+severity: high
+match:
+  type: tool_call
+  tool.arguments_regex: '(?i)\b(delete\s+from\s+[\w$."`]+(?![^;"]{0,400}\bwhere\b)\s*(;|"|\\|$|--|returning\b|using\b|limit\b)|update\s+[\w$."`]+\s+set\s+[\w$."`]+\s*=(?![^;"]{0,400}\bwhere\b))'
+action: alert

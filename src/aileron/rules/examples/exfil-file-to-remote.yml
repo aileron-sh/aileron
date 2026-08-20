@@ -1,0 +1,31 @@
+# Catches the core exfiltration move: a private key, cloud credential file, or
+# .env is read and its bytes become the body of an outbound request, either by
+# piping into curl/wget/nc or by handing the path to curl with -d @file, -F
+# f=@file, or -T. Requiring both the sensitive path AND the send construct in
+# the same call is what keeps it quiet: naming the file alone (ssh-add, chmod,
+# kubectl --kubeconfig) does not fire, and uploading a non-sensitive build
+# artifact does not fire. Left as alert rather than block because `.env`
+# uploads to an internal secret store, and `id_rsa.pub` registration, are
+# things a developer really does.
+id: aileron-130
+title: Credential or dotfile contents sent to a remote endpoint
+severity: critical
+match:
+  type: tool_call
+  # A sensitive local path is named somewhere in the arguments...
+  tool.arguments_contains:
+    - ".ssh/id_rsa"
+    - ".ssh/id_ed25519"
+    - ".aws/credentials"
+    - ".git-credentials"
+    - ".netrc"
+    - ".npmrc"
+    - ".pypirc"
+    - ".kube/config"
+    - "/etc/shadow"
+    - "service-account.json"
+    - ".env"
+  # ...and that call also pipes into a network client, or hands the file to
+  # curl/wget as the request body (-d @file, -F f=@file, -T file).
+  tool.arguments_regex: '(?i)(\|[^|]{0,80}\b(curl|wget|nc|ncat|netcat|socat|httpie)\b|\b(curl|wget|httpie)\b[^\n]{0,200}(--data-binary|--data-raw|--data|--form|-d|-F)[^\n]{0,20}@|\b(curl|wget)\b[^\n]{0,150}(--upload-file|-T ))'
+action: alert

@@ -1,0 +1,10 @@
+# Raw private key bytes moving through a tool call are almost never
+# legitimate. Split out from the path-based check (aileron-113) because
+# matching the path alone fired on ordinary ssh use.
+id: aileron-110
+title: Private key material passed through a tool call
+severity: high
+match:
+  type: tool_call
+  tool.arguments_regex: '-----BEGIN [A-Z ]{0,20}PRIVATE KEY'
+action: alert

