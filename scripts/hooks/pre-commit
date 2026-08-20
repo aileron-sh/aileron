@@ -3,7 +3,7 @@
 #
 # This exists because a broad `git add` once swept another tool's scaffolding
 # into this public repo. Files appear in this working tree that nobody
-# deliberately put there — agent harnesses, editors, and codegen tools all
+# deliberately put there - agent harnesses, editors, and codegen tools all
 # drop directories in. A clean `git status` is not a safe assumption, so the
 # allowlist is enforced mechanically rather than by remembering to look.
 #
@@ -23,6 +23,7 @@ LICENSE
 README.md
 SECURITY.md
 SPEC.md
+docs
 examples
 metrics
 pyproject.toml
@@ -31,7 +32,7 @@ src
 tests
 "
 
-# Never commit these, wherever they appear — gitignore covers them, but a
+# Never commit these, wherever they appear - gitignore covers them, but a
 # force-add would slip past it.
 forbidden_patterns='\.key$|\.pem$|\.chain\.jsonl|\.env$|\.env\.|id_rsa|\.p12$|\.pfx$'
 
