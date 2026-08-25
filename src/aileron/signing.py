@@ -170,10 +170,29 @@ def check_against_checkpoints(log_path: str) -> list[str]:
         return []
     events = chainlog.ChainLog.read(log_path)
     problems: list[str] = []
-    for checkpoint in checkpoints:
+    for index, checkpoint in enumerate(checkpoints):
         count = checkpoint.get("count")
         tip = checkpoint.get("tip_hash")
         if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            # Say so rather than skipping quietly. sign_checkpoint only ever
+            # writes a positive integer here, so a count that is a float, a
+            # string, or negative means the file was edited. Skipping in
+            # silence let a truncated journal pass with an unqualified OK while
+            # a plausible-looking checkpoint sat next to it, which is the exact
+            # answer this whole function exists to prevent: the operator sees
+            # the checkpoint file, sees OK, and concludes the cross-check ran.
+            problems.append(
+                f"checkpoint {index} has an unusable count ({count!r}), so it "
+                "could not be cross-checked - the checkpoints file has been "
+                "edited and this log should be treated as unverified"
+            )
+            continue
+        if not isinstance(tip, str):
+            problems.append(
+                f"checkpoint {index} has an unusable tip_hash ({tip!r}), so it "
+                "could not be cross-checked - the checkpoints file has been "
+                "edited and this log should be treated as unverified"
+            )
             continue
         if len(events) < count:
             problems.append(

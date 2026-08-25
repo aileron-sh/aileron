@@ -9,7 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aileron.chainlog import ChainLog
 from aileron.events import new_event
-from aileron.signing import generate_keypair, sign_checkpoint, verify_checkpoint
+from aileron.signing import (
+    check_against_checkpoints,
+    generate_keypair,
+    sign_checkpoint,
+    verify_checkpoint,
+)
 
 
 def make_log(tmp_path, name="chain.jsonl", n=3):
@@ -201,3 +206,52 @@ def test_reordering_alone_still_verifies_when_the_log_is_intact(tmp_path):
     lines = open(ckpt, encoding="utf-8").read().splitlines()
     open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
     assert verify_checkpoint(log_path, key_path) is True
+
+
+@pytest.mark.parametrize("bad_count", [8.0, -8, "8", None, True, [8]])
+def test_unusable_checkpoint_count_is_reported_not_skipped(tmp_path, bad_count):
+    """A checkpoint that cannot be used must be said out loud.
+
+    The cross-check is unauthenticated by design, so someone who can edit the
+    checkpoints file can also delete it. The difference is what the operator
+    sees. Deleting it leaves an obvious absence. Retyping `count` from 8 to 8.0
+    leaves a checkpoint file sitting next to the log looking perfectly normal,
+    and verify used to skip it in silence and print an unqualified
+    "OK: 4 events verified" on a journal truncated from 8 events to 4.
+
+    That is the exact answer check_against_checkpoints exists to prevent, so an
+    unusable checkpoint is now a problem in its own right.
+    """
+    log_path = tmp_path / "j.chain.jsonl"
+    log = ChainLog(str(log_path))
+    for i in range(8):
+        log.append(new_event("tool_call", "s", "a", "f", tool={"name": f"t{i}"}))
+    generate_keypair(str(tmp_path))
+    sign_checkpoint(str(log_path), str(tmp_path / "aileron_ed25519.key"))
+
+    cp_path = Path(str(log_path) + ".checkpoints.jsonl")
+    checkpoints = [json.loads(line) for line in cp_path.read_text().splitlines() if line.strip()]
+    checkpoints[-1]["count"] = bad_count
+    cp_path.write_text("\n".join(json.dumps(c) for c in checkpoints) + "\n")
+
+    # Truncate the journal the checkpoint was supposed to protect.
+    lines = log_path.read_text().splitlines()
+    log_path.write_text("\n".join(lines[:4]) + "\n")
+
+    problems = check_against_checkpoints(str(log_path))
+    assert problems, (
+        f"a checkpoint with count={bad_count!r} was skipped silently, so a "
+        "truncated journal would verify as OK"
+    )
+    assert any("unusable count" in p for p in problems), problems
+
+
+def test_honest_checkpoint_still_passes_on_an_intact_log(tmp_path):
+    """The fix must not make ordinary verification noisy."""
+    log_path = tmp_path / "j.chain.jsonl"
+    log = ChainLog(str(log_path))
+    for i in range(5):
+        log.append(new_event("tool_call", "s", "a", "f", tool={"name": f"t{i}"}))
+    generate_keypair(str(tmp_path))
+    sign_checkpoint(str(log_path), str(tmp_path / "aileron_ed25519.key"))
+    assert check_against_checkpoints(str(log_path)) == []
