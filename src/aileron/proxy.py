@@ -264,6 +264,24 @@ def _denial(msg: Any, calls: list[dict], blocked_id: Any, rule_id: str) -> Any:
     return [denial] + others
 
 
+def _refuse_all(msg: Any, calls: list[dict], message: str) -> Any:
+    """Refuse every call in a message with the same reason.
+
+    Used when the refusal is a property of the message as a whole rather than
+    of one call that matched a rule, so there is no single call to attribute it
+    to.
+    """
+    replies = [{"jsonrpc": "2.0", "id": call.get("id"),
+                "error": {"code": -32000, "message": message}}
+               for call in calls if call.get("id") is not None]
+    if isinstance(msg, list):
+        return replies
+    if replies:
+        return replies[0]
+    return {"jsonrpc": "2.0", "id": None,
+            "error": {"code": -32000, "message": message}}
+
+
 def _is_response(msg: Any) -> bool:
     """True when this is a JSON-RPC response we can match to a pending call.
 
@@ -426,6 +444,30 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                                      policed.blocked_rule))
                 continue  # child NOT invoked
 
+            # Is there room to track every call this message needs? Check before
+            # registering any of them, because forwarding is all or nothing: a
+            # message is written to the child in one piece, so refusing part of
+            # it is not possible. Recording part of it as blocked while the
+            # child runs the whole thing is the one outcome this project calls
+            # worse than not recording at all.
+            with lock:
+                wanted = {call_id for call_id, _ in policed.staged
+                          if call_id is not None and call_id not in pending}
+                no_room = len(pending) + len(wanted) > MAX_PENDING
+
+            if no_room:
+                # Fail closed: refuse rather than grow without bound, and do not
+                # forward, so the blocked record stays true.
+                for _call_id, ev in policed.staged:
+                    ev["status"] = "blocked"
+                    ev["policy"] = {"rule_id": "aileron-pending-limit",
+                                    "action": "block"}
+                    append(ev)
+                _respond_raw(client_out, wire, _refuse_all(
+                    msg, calls,
+                    "aileron: too many calls in flight, call refused"))
+                continue  # child NOT invoked
+
             for call_id, ev in policed.staged:
                 if call_id is None:
                     # No id means no response will come back to complete this
@@ -434,13 +476,6 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                     append(ev)
                     continue
                 with lock:
-                    if len(pending) >= MAX_PENDING and call_id not in pending:
-                        # Fail closed: refuse rather than grow without bound.
-                        ev["status"] = "blocked"
-                        ev["policy"] = {"rule_id": "aileron-pending-limit",
-                                        "action": "block"}
-                        log.append(ev)
-                        continue
                     prior = pending.get(call_id)
                     if prior is not None:
                         # A reused in-flight id would silently displace the

@@ -404,3 +404,70 @@ def test_content_length_is_bounded():
     huge = str(MAX_MESSAGE_BYTES + 1).encode()
     with pytest.raises(ValueError, match="too large"):
         _read_message(_io.BytesIO(b"Content-Length: " + huge + b"\r\n\r\n{}"))
+
+
+# A child that records what it was asked to run and never answers, so the
+# proxy's pending table fills up and stays full.
+CHILD_SILENT_RECORDER = (
+    "import sys, json, os\n"
+    "log = open(os.environ['CHILD_EXEC_LOG'], 'a', buffering=1)\n"
+    "for line in sys.stdin:\n"
+    "    line = line.strip()\n"
+    "    if not line:\n"
+    "        continue\n"
+    "    try:\n"
+    "        msg = json.loads(line)\n"
+    "    except Exception:\n"
+    "        continue\n"
+    "    for m in (msg if isinstance(msg, list) else [msg]):\n"
+    "        if isinstance(m, dict) and m.get('method') == 'tools/call':\n"
+    "            log.write(json.dumps(m.get('id')) + '\\n')\n"
+)
+
+
+def test_pending_limit_refuses_instead_of_forwarding(monkeypatch, tmp_path):
+    """A call recorded as blocked must never have reached the child.
+
+    When more calls are in flight than the proxy will track, it refuses them.
+    It used to write the blocked record and then forward the message anyway, so
+    the child ran calls the journal said were stopped. SECURITY.md names that
+    exact outcome as the worst possible one: a journal that says a call was
+    blocked when it ran is worse than no journal at all, because it is
+    confidently wrong.
+
+    MAX_PENDING is patched down so this stays a fast test rather than a
+    four thousand call one.
+    """
+    import aileron.proxy as proxy_module
+
+    monkeypatch.setattr(proxy_module, "MAX_PENDING", 3)
+    exec_log = tmp_path / "executed.jsonl"
+    exec_log.touch()
+    monkeypatch.setenv("CHILD_EXEC_LOG", str(exec_log))
+
+    sess = _ProxySession(monkeypatch, tmp_path,
+                         [sys.executable, "-c", CHILD_SILENT_RECORDER])
+    sent = 6
+    for i in range(sent):
+        sess.send(json.dumps({
+            "jsonrpc": "2.0", "id": i, "method": "tools/call",
+            "params": {"name": "victim", "arguments": {"i": i}},
+        }).encode())
+    # Do not read responses here. Under the old behavior no refusal ever came
+    # back, so a test that waits for one hangs instead of failing, and a
+    # regression test that hangs tells you nothing. Six small messages fit in
+    # the pipe buffer, so the proxy is never blocked writing.
+    sess.close()
+
+    blocked = [ev for ev in ChainLog.read(sess.log.path)
+               if ev.get("status") == "blocked"
+               and (ev.get("policy") or {}).get("rule_id") == "aileron-pending-limit"]
+    executed = [line for line in exec_log.read_text().splitlines() if line.strip()]
+
+    assert blocked, "expected the pending limit to refuse something"
+    # The point of the test: blocked calls did not run.
+    assert len(executed) == sent - len(blocked), (
+        f"{sent} sent, {len(blocked)} journaled blocked, but {len(executed)} "
+        "reached the child; a blocked record was a lie"
+    )
+    assert verify(sess.log.path).ok
