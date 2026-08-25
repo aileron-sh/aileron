@@ -46,6 +46,28 @@ HISTORY = Path("metrics/history.jsonl")
 UA = "aileron-metrics/1.0 (+https://github.com/Aileron-sh/aileron)"
 
 
+def _is_bot(account: dict) -> bool:
+    """True for our own automation rather than a person.
+
+    GitHub Apps appear as ``name[bot]`` and report ``type: "Bot"``. Check both:
+    the type field is the documented signal, and the login suffix still catches
+    an endpoint that omits it.
+    """
+    login = (account.get("login") or "").lower()
+    return account.get("type") == "Bot" or login.endswith("[bot]")
+
+
+def _is_external(account: dict) -> bool:
+    """True when this account is independent interest in the project.
+
+    Not us, and not a robot we ourselves installed. The metrics workflow commits
+    its own snapshots, so without this it appears as an external contributor and
+    inflates the single number that most needs to be trustworthy.
+    """
+    login = (account.get("login") or "").lower()
+    return bool(login) and login not in MAINTAINERS and not _is_bot(account)
+
+
 def _get(url: str, token: str | None = None, accept: str = "application/vnd.github+json",
          retries: int = 3):
     """GET and decode JSON, retrying transient rate limits with backoff."""
@@ -123,15 +145,19 @@ def collect_community(token):
          "created_at": i["created_at"],
          "is_pr": "pull_request" in i}
         for i in issues
-        if (i.get("user") or {}).get("login", "").lower() not in MAINTAINERS
+        if _is_external(i.get("user") or {})
     ]
+    bots = sorted({c["login"] for c in contributors if _is_bot(c)}
+                  | {(i.get("user") or {}).get("login", "") for i in issues
+                     if _is_bot(i.get("user") or {})} - {""})
     return {
         "maintainers_excluded": sorted(MAINTAINERS),
-        "contributors": [{"login": c["login"], "contributions": c["contributions"]}
+        "bots_excluded": bots,
+        "contributors": [{"login": c["login"], "contributions": c["contributions"],
+                          "bot": _is_bot(c)}
                          for c in contributors],
         "contributor_count": len(contributors),
-        "external_contributor_count": sum(
-            1 for c in contributors if c["login"].lower() not in MAINTAINERS),
+        "external_contributor_count": sum(1 for c in contributors if _is_external(c)),
         "external_issues_and_prs": external_issues,
         "external_issue_count": len(external_issues),
     }
