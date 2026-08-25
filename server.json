@@ -3,7 +3,7 @@
   "name": "io.github.aileron-sh/aileron",
   "title": "Aileron Journal",
   "description": "Read-only queries over Aileron audit journals: verify integrity, search recorded tool calls",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "websiteUrl": "https://github.com/aileron-sh/aileron",
   "repository": {
     "url": "https://github.com/aileron-sh/aileron",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "aileron",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "transport": {
         "type": "stdio"
       },

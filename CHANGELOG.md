@@ -6,41 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
-## [Unreleased]
+## [0.1.5] - 2026-08-25
+
+**Performance release.** Matching the bundled rule pack against a large payload
+was 23 ms in 0.1.4. It is now 2.8 ms, and the README no longer claims a figure
+the shipped code did not have.
 
 ### Performance
 
-- **Rules now skip their own regex when the payload cannot possibly match it.**
-  A rule looking for `auditctl` cannot fire on a payload that does not contain
-  the text `auditctl` anywhere, but it was scanning every byte to find that out.
-  Each pattern is read once and reduced to a set of literals it requires, and a
-  substring search decides whether the regex runs at all. On a benign 32 KB call
-  17 of the 19 patterns that used to scan are now skipped.
+- **Rules skip their own regex when the payload cannot possibly match it.** A
+  rule looking for `auditctl` cannot fire on a payload that does not contain the
+  text `auditctl` anywhere, but it was scanning every byte to find that out.
+  Each pattern is read once and reduced to the literals it requires, and cheap
+  substring searches decide whether the regex runs at all. On a benign 32 KB
+  call, 17 of the 19 patterns that would otherwise scan the whole payload never
+  run.
 
-  This is a speed change only, and the risk is entirely one-sided: skipping a
-  regex that would have matched is a rule that silently stops firing. So
-  anything the extractor does not fully understand returns "no prefilter, run
-  the regex", and `AILERON_NO_PREFILTER=1` turns the whole thing off.
+  A requirement is a conjunction, not a single set. Rule `aileron-162` needs
+  `systemctl` near `disable` near `auditd`, so requiring only the first set
+  meant any prose containing the ordinary word "service" still paid for a full
+  scan. Requiring all of them took a 32 KB markdown payload from 6.47 ms to
+  2.23 ms.
+
+  This changes speed and nothing else, and the risk is entirely one-sided:
+  skipping a regex that would have matched is a rule that silently stops firing
+  while the journal still looks clean. So anything the extractor does not fully
+  understand returns "no prefilter, run the regex", and `AILERON_NO_PREFILTER=1`
+  turns it off outright for an operator who wants it ruled out during an
+  investigation.
 
   The case folding is the subtle part. The prefilter needs a case-insensitive
   containment test that agrees with `re.IGNORECASE`, and neither obvious choice
   does. `str.lower()` misses U+017F, and `str.casefold()` misses U+0131 and
   splits multi-character literals apart on U+0130, which casefolds to two
   codepoints. Exactly four codepoints in Unicode are case-equal to an ASCII
-  character; a test proves over all 1,114,112 of them that every one folds to
-  exactly the character it is equal to.
+  character; a test proves over all 1,114,112 of them that each one folds to
+  exactly the character it is equal to, which is what keeps literals contiguous.
 
-  A requirement is a conjunction, not a single set. Rule `aileron-162` needs
-  `systemctl` near `disable` near `auditd`, so requiring only the first set
-  meant any prose containing the ordinary word "service" paid for a full scan.
-  Requiring all of them took a 32 KB markdown payload from 6.47 ms to 2.23 ms.
-
-  Verified by a differential test over every example in the rule pack, a
+  Verified by a differential test over all 337 examples in the rule pack, a
   property test on generated patterns, a mutation fuzz that starts from inputs
-  the rules must catch and checks the invariant on 31,570 mutants that still
+  the rules must catch and re-checks the invariant on 31,570 mutants that still
   match, and an independently written adversarial attack that generates strings
   from each pattern's own parse tree and checked 2,324,740 matching pairs. None
-  of them found a verdict difference.
+  found a verdict difference.
+
+- **Each matched path is rendered to text once per decision, not once per
+  rule.** Every content clause used to re-serialize the same value before
+  searching it, so cost scaled with rule count multiplied by payload size. With
+  32 rules that was 41 renders of the same arguments per call. Clauses are also
+  ordered so the most selective one is tested first, and `_contains` needles are
+  looked up once per event rather than once per rule.
+
+### Fixed
+
+- **The adoption metrics counted our own bot as an external contributor.** The
+  metrics workflow commits its snapshots, so `github-actions[bot]` appears in
+  the contributors list and was not excluded. The headline number read 1 when
+  the truth was 0, which is the worst possible place for an off-by-one, since
+  that figure exists to show whether anyone outside the project cares. Accounts
+  reported as type `Bot` or with a `[bot]` login suffix are now excluded from
+  both contributor and issue counts, and the snapshot records which ones were
+  treated as bots.
 
 ### Changed
 
@@ -50,40 +76,23 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   prefilter, which finds nothing anywhere, and it was flattering the result by
   about 3x. Since the README publishes those numbers, the payload is now fixed
   text that looks like real arguments, and a test asserts no bundled rule fires
-  on it so the benchmark still measures the ordinary path. The baseline records
-  the payload shape alongside the rule count, because a change to either is
-  more work rather than slower code.
-
-### Performance
-
-- **Each matched path is now rendered to text once per decision, not once per
-  rule.** Every content clause used to re-serialize the same value before
-  searching it, so cost scaled with rule count multiplied by payload size. With
-  the 32-rule pack that was 41 renders of the same arguments per call. Worth
-  about 6% at 32 KB on CI; the value is removing the quadratic factor as packs
-  grow, not the immediate saving. Pinned by a test asserting a single render per
-  decision and a differential test requiring memoized and unmemoized evaluation
-  to return the same action and rule ids.
-
-### Changed
-
-- The benchmark records the bundled rule count and reports when a comparison
-  spans different pack sizes. Growing the pack from 2 rules to 32 in 0.1.4 made
-  CI report a 39x proxy regression that did not exist: content rules match
-  against the whole payload, so the workload had changed, not the code. It
-  still fails the run, because a bigger pack is a real cost that should be
-  re-recorded deliberately rather than waved through.
+  on it so the benchmark still measures the ordinary path.
+- The benchmark baseline records the bundled rule count and the payload shape.
+  Growing the pack from 2 rules to 32 in 0.1.4 made CI report a 39x proxy
+  regression that did not exist: content rules match against the whole payload,
+  so the workload had changed, not the code. Changing either is now reported as
+  workload rather than as slower code, though it still fails the run so it has
+  to be re-recorded deliberately.
 
 ### Documentation
 
 - **The performance section reports the proxy's cost and the rule pack's cost
   separately, and the headline no longer claims sub-millisecond overhead for
-  the bundled pack.** That claim was measured when 2 rules shipped. With 32 it
-  is 0.30 ms at 64 B but 23 ms at 32 KB, essentially all of it rule evaluation;
-  the proxy itself stays between 0.14 and 0.38 ms. Anyone running the
-  documented benchmark command would have seen the difference immediately, so
-  the README now states it, explains that the cost is rule evaluation rather
-  than the enforcement path, and says how to reduce it.
+  the bundled pack.** That claim was measured when 2 rules shipped, and 0.1.4
+  released it unchanged alongside 32 rules, so the documented benchmark command
+  would have contradicted the README immediately. Measured on the CI runner with
+  everything loaded, added overhead is 0.47 ms at 64 B, 0.66 ms at 4 KB and
+  2.79 ms at 32 KB, of which the proxy itself is 0.16 to 0.55 ms.
 
 ## [0.1.4] - 2026-08-20
 
