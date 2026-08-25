@@ -330,6 +330,87 @@ def _load_demo_rules():
     return load_rules(str(bundled_rules_dir()))
 
 
+class _DemoSession:
+    """The scripted agent run behind ``aileron demo``.
+
+    Kept as a small object rather than a closure so the demo reads as what it
+    is: start a session, make some calls, one of which policy refuses, then
+    show what the journal says. Someone reading this to understand Aileron
+    should be able to follow it top to bottom.
+    """
+
+    def __init__(self, log, rules, baseline, decide, session_id="demo-session"):
+        self.log = log
+        self.rules = rules
+        self.baseline = baseline
+        self.decide = decide
+        self.session_id = session_id
+        self.alerts = 0
+
+    def _event(self, kind, **fields):
+        from .events import new_event
+        return new_event(kind, self.session_id, "demo-agent", "demo", **fields)
+
+    def _policy_for(self, event):
+        """What policy says about this call, as the event field to record."""
+        if self.decide is None or not self.rules:
+            return None
+        decision = self.decide(event, self.rules)
+        if decision.action in ("block", "alert"):
+            return {"rule_id": decision.rule_ids[0], "action": decision.action}
+        return None
+
+    def call(self, name: str, arguments: dict, latency_ms: float) -> dict:
+        """Record one tool call, applying policy and the anomaly baseline."""
+        from .events import digest
+
+        event = self._event(
+            "tool_call",
+            tool={"name": name, "arguments_digest": digest(arguments),
+                  "arguments": arguments},
+            latency_ms=latency_ms,
+        )
+        policy = self._policy_for(event)
+        if policy is not None:
+            event["policy"] = policy
+            if policy["action"] == "block":
+                event["status"] = "blocked"
+
+        stored = self.log.append(event)
+
+        # Flag against what the baseline knew BEFORE this call, then learn it.
+        flags = self.baseline.flag(event)
+        self.baseline.observe(event)
+        if flags:
+            self.alerts += 1
+            self.log.append(self._event(
+                "alert", tool={"name": name},
+                meta={"flags": flags, "event_id": event["id"]}))
+        return stored
+
+    def start(self) -> None:
+        self.log.append(self._event("agent_start"))
+
+    def end(self) -> None:
+        self.log.append(self._event("agent_end", latency_ms=1200.0))
+
+
+def _seeded_baseline():
+    """A baseline with a synthetic "yesterday" so today has something to differ from.
+
+    Without prior observations every tool looks new and everything is flagged,
+    which teaches the reader nothing about what the detector is for.
+    """
+    from .detect import Baseline
+    from .events import new_event
+
+    baseline = Baseline()
+    for name in ("read_file", "web_search", "read_file", "write_file"):
+        baseline.observe(new_event("tool_call", "demo-baseline", "demo-agent",
+                                   "demo", tool={"name": name}))
+    return baseline
+
+
 def _cmd_demo(args: argparse.Namespace) -> int:
     """Scripted fake-agent session: agent_start, tool calls (one blocked by
     policy, anomalies flagged by a real Baseline), agent_end, HTML report.
@@ -339,13 +420,14 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     persisted - the same privacy posture as production defaults.
     """
     from .chainlog import ChainLog, verify
-    from .detect import Baseline
-    from .events import digest, new_event
     from .report import render_html
 
     try:
         from .policy import decide
     except ImportError:
+        # policy needs pyyaml. It is a hard dependency, but the demo is the
+        # first thing anyone runs, so it degrades to recording rather than
+        # failing outright if the install is somehow incomplete.
         decide = None
 
     out_dir = Path(args.dir)
@@ -354,68 +436,16 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     report_path = out_dir / "demo-report.html"
     log_path.unlink(missing_ok=True)
 
-    rules = _load_demo_rules()
     log = ChainLog(str(log_path))  # digest-only, like production defaults
-    session_id = "demo-session"
-
-    # Seed the behavioral baseline from a synthetic "yesterday" session so
-    # the detector has normal behavior to compare today's run against.
-    baseline = Baseline()
-    for name in ("read_file", "web_search", "read_file", "write_file"):
-        baseline.observe(
-            new_event("tool_call", "demo-baseline", "demo-agent", "demo",
-                      tool={"name": name})
-        )
-
-    alerts = 0
-
-    def tool_call(name: str, arguments: dict, latency_ms: float) -> dict:
-        nonlocal alerts
-        event = new_event(
-            "tool_call",
-            session_id,
-            "demo-agent",
-            "demo",
-            tool={
-                "name": name,
-                "arguments_digest": digest(arguments),
-                "arguments": arguments,
-            },
-            latency_ms=latency_ms,
-        )
-        if decide is not None and rules:
-            decision = decide(event, rules)
-            if decision.action == "block":
-                event["status"] = "blocked"
-                event["policy"] = {
-                    "rule_id": decision.rule_ids[0],
-                    "action": "block",
-                }
-            elif decision.action == "alert":
-                event["policy"] = {
-                    "rule_id": decision.rule_ids[0],
-                    "action": "alert",
-                }
-        stored = log.append(event)
-        flags = baseline.flag(event)
-        baseline.observe(event)
-        if flags:
-            alerts += 1
-            log.append(
-                new_event("alert", session_id, "demo-agent", "demo",
-                          tool={"name": name},
-                          meta={"flags": flags, "event_id": event["id"]})
-            )
-        return stored
+    session = _DemoSession(log, _load_demo_rules(), _seeded_baseline(), decide)
 
     print("demo: running scripted fake-agent session ...")
-    log.append(new_event("agent_start", session_id, "demo-agent", "demo"))
-    tool_call("read_file", {"path": "/etc/hostname"}, 8.0)
-    tool_call("web_search", {"query": "aileron flight recorder"}, 42.0)
-    blocked = tool_call("shell", {"cmd": "rm -rf / --no-preserve-root"}, 3.0)
-    tool_call("write_file", {"path": "/tmp/notes.txt"}, 11.0)
-    log.append(new_event("agent_end", session_id, "demo-agent", "demo",
-                         latency_ms=1200.0))
+    session.start()
+    session.call("read_file", {"path": "/etc/hostname"}, 8.0)
+    session.call("web_search", {"query": "aileron flight recorder"}, 42.0)
+    blocked = session.call("shell", {"cmd": "rm -rf / --no-preserve-root"}, 3.0)
+    session.call("write_file", {"path": "/tmp/notes.txt"}, 11.0)
+    session.end()
 
     events = list(log)
     result = verify(str(log_path))
@@ -428,7 +458,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     if blocked.get("policy"):
         print(f"demo: blocked shell call by rule "
               f"{blocked['policy']['rule_id']}")
-    print(f"demo: {alerts} anomaly alert(s) emitted")
+    print(f"demo: {session.alerts} anomaly alert(s) emitted")
     print(f"demo: report written to {report_path}")
     return 0 if result.ok else 2
 
