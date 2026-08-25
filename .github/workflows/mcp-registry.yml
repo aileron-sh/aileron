@@ -56,6 +56,29 @@ jobs:
       - name: Validate
         run: "$HOME/go/bin/publisher validate"
 
+      - name: Wait for the release to appear on PyPI
+        # The registry verifies that the version it is being told about really
+        # exists on PyPI, and this workflow and the PyPI publish both start from
+        # the same "release published" event. On 0.1.5 the registry got there
+        # first and the publish failed with a 404 on a version that landed
+        # seconds later. Waiting is the whole fix.
+        run: |
+          set -eu
+          version=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+                   "https://pypi.org/pypi/aileron/$version/json")
+            if [ "$code" = "200" ]; then
+              echo "  aileron $version is on PyPI after $attempt attempt(s)"
+              exit 0
+            fi
+            echo "  attempt $attempt: PyPI says $code for $version, waiting"
+            sleep 20
+          done
+          echo "::error::aileron $version never appeared on PyPI." \
+               "The registry would reject it, so stopping instead of failing there."
+          exit 1
+
       - name: Publish
         run: |
           "$HOME/go/bin/publisher" login github-oidc
