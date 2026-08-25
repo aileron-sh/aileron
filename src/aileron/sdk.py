@@ -59,6 +59,50 @@ def _jsonable(obj: Any) -> Any:
         return repr(obj)
 
 
+def _session_identity() -> tuple[str, str, str]:
+    """Who is running, for events recorded outside a track_agent block.
+
+    Inside one, the session context var carries the agent's identity so every
+    tracked call is attributed to that run. Outside one there is still a
+    session, just an anonymous process-wide one, because an event with no
+    session is harder to read than an event with a synthetic one.
+    """
+    session = _current_agent.get()
+    if session is not None:
+        return session
+    return _FALLBACK_SESSION_ID, "aileron-sdk", "sdk"
+
+
+def _call_arguments(args: tuple, kwargs: dict) -> dict:
+    """The call's arguments, in a shape that can always be serialized."""
+    return {
+        "args": [_jsonable(a) for a in args],
+        "kwargs": {str(k): _jsonable(v) for k, v in kwargs.items()},
+    }
+
+
+def _error_text(exc: BaseException, capture_content: bool) -> str:
+    """What to record about an exception.
+
+    An exception's str routinely embeds the argument values that caused it, so
+    in digest-only mode record just the type. Honoring the privacy promise on
+    the error path matters more than on the happy path, because errors are
+    where interesting values end up.
+    """
+    return f"{type(exc).__name__}: {exc}" if capture_content else type(exc).__name__
+
+
+def _alert_event(flags: list, tool_name: str, source: dict,
+                 identity: tuple[str, str, str]) -> dict:
+    """An alert event pointing back at the call that triggered it."""
+    session_id, agent_name, framework = identity
+    return events.new_event(
+        "alert", session_id, agent_name, framework,
+        tool={"name": tool_name},
+        meta={"flags": flags, "event_id": source["id"]},
+    )
+
+
 def track(
     tool_name: str | None = None,
     log: ChainLog | None = None,
@@ -81,28 +125,19 @@ def track(
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             sink = log if log is not None else default_log()
-            session = _current_agent.get()
-            if session is not None:
-                session_id, agent_name, framework = session
-            else:
-                session_id, agent_name, framework = (
-                    _FALLBACK_SESSION_ID,
-                    "aileron-sdk",
-                    "sdk",
-                )
-            arguments = {
-                "args": [_jsonable(a) for a in args],
-                "kwargs": {str(k): _jsonable(v) for k, v in kwargs.items()},
-            }
+            identity = _session_identity()
+            session_id, agent_name, framework = identity
+            arguments = _call_arguments(args, kwargs)
             started = time.perf_counter()
+
+            def elapsed_ms() -> float:
+                return (time.perf_counter() - started) * 1000.0
+
             # Arguments are always attached in memory so policy rules can
             # match on content; ChainLog.append strips them at persist time
             # unless the sink was opened with capture_content=True.
             ev = events.new_event(
-                "tool_call",
-                session_id,
-                agent_name,
-                framework,
+                "tool_call", session_id, agent_name, framework,
                 tool={
                     "name": name,
                     "arguments": arguments,
@@ -110,13 +145,14 @@ def track(
                 },
                 meta={},
             )
+
             if rules:
                 decision = decide(ev, rules)
                 if decision.action == "block":
                     rule_id = decision.rule_ids[0]
                     ev["status"] = "blocked"
                     ev["policy"] = {"rule_id": rule_id, "action": "block"}
-                    ev["latency_ms"] = (time.perf_counter() - started) * 1000.0
+                    ev["latency_ms"] = elapsed_ms()
                     sink.append(ev)
                     raise PolicyBlocked(rule_id)
                 if decision.rule_ids:
@@ -124,41 +160,31 @@ def track(
                         "rule_id": decision.rule_ids[0],
                         "action": decision.action,
                     }
+
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:
                 ev["status"] = "error"
-                ev["latency_ms"] = (time.perf_counter() - started) * 1000.0
-                # The exception's str can embed argument values; record only
-                # the type unless content capture is on, to honor the
-                # digest-only promise.
-                if getattr(sink, "capture_content", False):
-                    err_text = f"{type(exc).__name__}: {exc}"
-                else:
-                    err_text = type(exc).__name__
-                ev["meta"] = {**ev.get("meta", {}), "error": err_text}
+                ev["latency_ms"] = elapsed_ms()
+                ev["meta"] = {
+                    **ev.get("meta", {}),
+                    "error": _error_text(exc, getattr(sink, "capture_content", False)),
+                }
                 sink.append(ev)
                 raise
+
             ev["status"] = "ok"
-            ev["latency_ms"] = (time.perf_counter() - started) * 1000.0
+            ev["latency_ms"] = elapsed_ms()
             safe_result = _jsonable(result)
             ev["result_digest"] = events.digest(safe_result)
             ev["result"] = safe_result  # stripped at persist time unless capture_content
             sink.append(ev)
+
             if baseline is not None:
                 flags = baseline.flag(ev)
                 baseline.observe(ev)
                 if flags:
-                    sink.append(
-                        events.new_event(
-                            "alert",
-                            session_id,
-                            agent_name,
-                            framework,
-                            tool={"name": name},
-                            meta={"flags": flags, "event_id": ev["id"]},
-                        )
-                    )
+                    sink.append(_alert_event(flags, name, ev, identity))
             return result
 
         return wrapper  # type: ignore[return-value]

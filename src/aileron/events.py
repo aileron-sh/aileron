@@ -122,97 +122,158 @@ def new_event(
     return event
 
 
+# Field checks, one small function each.
+#
+# This used to be a single ninety-line run of if-statements, which made it hard
+# to see that every field is really the same shape of question: given this
+# value, what is wrong with it. Each check below is a pure function from a value
+# to a list of complaints, and `_FIELD_CHECKS` lists them in the order their
+# errors are reported. Adding a field is adding one entry, and the order of the
+# output is visible in one place rather than implied by control flow.
+
+
+def _hex_string(value: Any, length: int) -> bool:
+    """True when value is a lowercase hex string of exactly ``length``."""
+    return isinstance(value, str) and bool(re.fullmatch(f"[0-9a-f]{{{length}}}", value))
+
+
+def _one_of(allowed: set, label: str):
+    """Value must be a member of ``allowed``.
+
+    The try/except is not decoration. A hostile or corrupt journal can carry a
+    list or dict here, and ``x in some_set`` raises TypeError on an unhashable
+    value. validate() promises a list of problems, so it has to answer
+    "that is not one of the allowed values" rather than terminating by exception.
+    """
+    def check(value: Any) -> list[str]:
+        try:
+            ok = value in allowed
+        except TypeError:
+            ok = False
+        return [] if ok else [f"{label} must be one of {sorted(allowed)}"]
+    return check
+
+
+def _check_id(value: Any) -> list[str]:
+    if _hex_string(value, 32):
+        return []
+    return ["id must be a 32-char lowercase hex string (uuid4 hex)"]
+
+
+def _check_ts(value: Any) -> list[str]:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return ["ts must be an RFC3339 UTC string ending in 'Z'"]
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ["ts is not a valid RFC3339 timestamp"]
+    return []
+
+
+def _check_seq(value: Any) -> list[str]:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return ["seq must be an int"]
+    if value < 0:
+        return ["seq must be >= 0"]
+    return []
+
+
+def _check_session_id(value: Any) -> list[str]:
+    return [] if isinstance(value, str) else ["session_id must be a string"]
+
+
+def _check_agent(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return ["agent must be a dict"]
+    return [f"agent missing key: {key}"
+            for key in ("name", "framework", "version") if key not in value]
+
+
+def _check_latency(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ["latency_ms must be a number or None"]
+    return []
+
+
+def _check_tool(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["tool must be a dict or None"]
+    errors = []
+    if "name" not in value:
+        errors.append("tool missing key: name")
+    elif not isinstance(value["name"], str):
+        errors.append("tool.name must be a string")
+    arguments_digest = value.get("arguments_digest")
+    if "arguments_digest" in value and arguments_digest is not None:
+        if not _HASH_RE.match(str(arguments_digest)):
+            errors.append("tool.arguments_digest must be a sha256 hex string")
+    return errors
+
+
+def _check_result_digest(value: Any) -> list[str]:
+    if value is None or _HASH_RE.match(str(value)):
+        return []
+    return ["result_digest must be a sha256 hex string or None"]
+
+
+def _check_policy(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["policy must be a dict or None"]
+    return [f"policy missing key: {key}"
+            for key in ("rule_id", "action") if key not in value]
+
+
+def _check_meta(value: Any) -> list[str]:
+    return [] if isinstance(value, dict) else ["meta must be a dict"]
+
+
+def _chain_hash(label: str):
+    """prev_hash and hash are the chain links; both are plain sha256 hex."""
+    def check(value: Any) -> list[str]:
+        if _hex_string(value, 64):
+            return []
+        return [f"{label} must be a 64-char lowercase hex string"]
+    return check
+
+
+# Order matters only because it is the order errors come back in, which some
+# callers print. Keeping it explicit here is the point.
+_FIELD_CHECKS: tuple[tuple[str, Any], ...] = (
+    ("id", _check_id),
+    ("ts", _check_ts),
+    ("seq", _check_seq),
+    ("session_id", _check_session_id),
+    ("agent", _check_agent),
+    ("type", _one_of(EVENT_TYPES, "type")),
+    ("status", _one_of(STATUSES, "status")),
+    ("latency_ms", _check_latency),
+    ("tool", _check_tool),
+    ("result_digest", _check_result_digest),
+    ("policy", _check_policy),
+    ("meta", _check_meta),
+    ("prev_hash", _chain_hash("prev_hash")),
+    ("hash", _chain_hash("hash")),
+)
+
+
 def validate(event: dict) -> list[str]:
-    """Return a list of schema error strings for ``event``; ``[]`` if valid."""
-    errors: list[str] = []
+    """Return a list of schema error strings for ``event``; ``[]`` if valid.
+
+    Never raises. Events reach this function from journals, which can be
+    corrupt or hostile, so every malformed value has to come back as a
+    complaint rather than an exception.
+    """
     if not isinstance(event, dict):
         return ["event is not a dict"]
 
-    missing = EVENT_KEYS - set(event)
-    for key in sorted(missing):
-        errors.append(f"missing key: {key}")
-
-    if "id" in event:
-        if not isinstance(event["id"], str) or not re.fullmatch(
-            r"[0-9a-f]{32}", event["id"]
-        ):
-            errors.append("id must be a 32-char lowercase hex string (uuid4 hex)")
-
-    if "ts" in event:
-        ts = event["ts"]
-        if not isinstance(ts, str) or not ts.endswith("Z"):
-            errors.append("ts must be an RFC3339 UTC string ending in 'Z'")
-        else:
-            try:
-                datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            except ValueError:
-                errors.append("ts is not a valid RFC3339 timestamp")
-
-    if "seq" in event:
-        if not isinstance(event["seq"], int) or isinstance(event["seq"], bool):
-            errors.append("seq must be an int")
-        elif event["seq"] < 0:
-            errors.append("seq must be >= 0")
-
-    if "session_id" in event and not isinstance(event["session_id"], str):
-        errors.append("session_id must be a string")
-
-    if "agent" in event:
-        agent = event["agent"]
-        if not isinstance(agent, dict):
-            errors.append("agent must be a dict")
-        else:
-            for key in ("name", "framework", "version"):
-                if key not in agent:
-                    errors.append(f"agent missing key: {key}")
-
-    if "type" in event and event["type"] not in EVENT_TYPES:
-        errors.append(f"type must be one of {sorted(EVENT_TYPES)}")
-
-    if "status" in event and event["status"] not in STATUSES:
-        errors.append(f"status must be one of {sorted(STATUSES)}")
-
-    if "latency_ms" in event:
-        lat = event["latency_ms"]
-        if lat is not None and (
-            not isinstance(lat, (int, float)) or isinstance(lat, bool)
-        ):
-            errors.append("latency_ms must be a number or None")
-
-    if "tool" in event:
-        tool = event["tool"]
-        if tool is not None:
-            if not isinstance(tool, dict):
-                errors.append("tool must be a dict or None")
-            else:
-                if "name" not in tool:
-                    errors.append("tool missing key: name")
-                elif not isinstance(tool["name"], str):
-                    errors.append("tool.name must be a string")
-                if "arguments_digest" in tool and tool["arguments_digest"] is not None:
-                    if not _HASH_RE.match(str(tool["arguments_digest"])):
-                        errors.append("tool.arguments_digest must be a sha256 hex string")
-
-    if "result_digest" in event and event["result_digest"] is not None:
-        if not _HASH_RE.match(str(event["result_digest"])):
-            errors.append("result_digest must be a sha256 hex string or None")
-
-    if "policy" in event:
-        policy = event["policy"]
-        if policy is not None:
-            if not isinstance(policy, dict):
-                errors.append("policy must be a dict or None")
-            else:
-                for key in ("rule_id", "action"):
-                    if key not in policy:
-                        errors.append(f"policy missing key: {key}")
-
-    if "meta" in event and not isinstance(event["meta"], dict):
-        errors.append("meta must be a dict")
-
-    for key in ("prev_hash", "hash"):
-        if key in event:
-            if not isinstance(event[key], str) or not _HASH_RE.match(event[key]):
-                errors.append(f"{key} must be a 64-char lowercase hex string")
-
-    return errors
+    missing = [f"missing key: {key}" for key in sorted(EVENT_KEYS - set(event))]
+    present = [error
+               for key, check in _FIELD_CHECKS if key in event
+               for error in check(event[key])]
+    return missing + present

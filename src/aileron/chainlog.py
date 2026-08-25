@@ -103,6 +103,100 @@ class ChainLog:
         return list(cls(path))
 
 
+@dataclass(frozen=True)
+class _JournalLine:
+    """One physical line, decoded as far as it could be.
+
+    ``error`` is set when the line could not be read as an event at all, in
+    which case ``event`` is None. Separating "what is on this line" from "does
+    it fit the chain" is the whole point: reading is about bytes and JSON,
+    checking is about hashes and sequence numbers, and mixing them is what made
+    the original hard to follow.
+    """
+
+    lineno: int
+    text: str | None
+    event: dict | None
+    error: str | None
+
+
+def _read_journal(path: str) -> Iterator[_JournalLine]:
+    """Decode the journal one line at a time, reporting rather than raising.
+
+    Bytes are read and decoded per line on purpose. Raw invalid UTF-8 in a
+    journal is evidence of tampering and must be reported as such, not escape
+    as an exception out of the integrity check itself.
+
+    Blank lines are skipped entirely: they carry no event and consume no
+    sequence number.
+    """
+    with open(path, "rb") as handle:
+        for lineno, raw_line in enumerate(handle, start=1):
+            try:
+                text = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError as exc:
+                yield _JournalLine(lineno, None, None, f"line {lineno}: invalid UTF-8: {exc}")
+                continue
+            if not text:
+                continue
+            try:
+                event = json.loads(text)
+            except (ValueError, RecursionError) as exc:
+                yield _JournalLine(lineno, text, None, f"line {lineno}: invalid JSON: {exc}")
+                continue
+            if not isinstance(event, dict):
+                yield _JournalLine(lineno, text, None,
+                                   f"line {lineno}: event is not a JSON object")
+                continue
+            yield _JournalLine(lineno, text, event, None)
+
+
+def _encoding_errors(line: _JournalLine) -> list[tuple[Any, str]]:
+    """Complaints about how the event was written, not about its contents.
+
+    The stored bytes are authoritative, not just the parsed object:
+    re-serializing must reproduce the line exactly. This catches duplicate keys,
+    non-canonical number literals, and anything else smuggled past json.loads'
+    last-value-wins behavior.
+    """
+    event, seq = line.event, (line.event or {}).get("seq")
+    try:
+        if canonical_json(event) != line.text:
+            return [(seq, f"line {line.lineno}: non-canonical encoding")]
+    except (ValueError, TypeError) as exc:
+        return [(seq, f"line {line.lineno}: uncanonicalizable content: {exc}")]
+    return []
+
+
+def _chain_errors(line: _JournalLine, expected_seq: int,
+                  expected_prev: Any) -> list[tuple[Any, str]]:
+    """Complaints about where the event sits in the chain.
+
+    ``expected_prev`` is ``_BROKEN`` when an earlier line could not be read, in
+    which case nothing after it can be trusted to link to anything.
+    """
+    event = line.event or {}
+    seq = event.get("seq")
+    problems: list[tuple[Any, str]] = []
+
+    if seq != expected_seq:
+        problems.append((seq, f"seq discontinuity at line {line.lineno}: "
+                              f"expected {expected_seq}, got {seq}"))
+    if expected_prev is _BROKEN:
+        problems.append((seq, f"seq {seq}: unverifiable, chain broken at an earlier line"))
+    elif event.get("prev_hash") != expected_prev:
+        problems.append((seq, f"prev_hash mismatch at seq {seq}"))
+
+    try:
+        actual = event_hash(event)
+    except (ValueError, TypeError):
+        actual = None  # already reported as uncanonicalizable
+    if actual is None or event.get("hash") != actual:
+        problems.append((seq, f"hash mismatch at seq {seq} (content tampered)"))
+
+    return problems
+
+
 def verify(path: str) -> VerifyResult:
     """Verify the hash-chained log at ``path``.
 
@@ -110,73 +204,47 @@ def verify(path: str) -> VerifyResult:
     event's prev_hash equals the previous event's hash), and recomputes each
     event's hash. Returns a VerifyResult; ``first_bad_seq`` is the seq of the
     first event failing any check.
-    """
-    errors: list[str] = []
-    first_bad_seq: int | None = None
 
+    Never raises on the journal's contents. Whatever bytes are on disk, the
+    answer is a verdict, because the whole point of this function is to be
+    trustworthy about a file an attacker may have touched.
+    """
     if not os.path.exists(path):
         return VerifyResult(ok=False, count=0, first_bad_seq=None,
                             errors=[f"log file not found: {path}"])
 
-    def bad(seq: Any, msg: str) -> None:
+    errors: list[str] = []
+    first_bad_seq: int | None = None
+
+    def record(problems: list[tuple[Any, str]]) -> None:
         nonlocal first_bad_seq
-        errors.append(msg)
-        if first_bad_seq is None:
-            first_bad_seq = seq if isinstance(seq, int) else None
+        for seq, message in problems:
+            errors.append(message)
+            if first_bad_seq is None:
+                first_bad_seq = seq if isinstance(seq, int) else None
 
     count = 0
     expected_seq = 1
-    expected_prev = GENESIS_PREV_HASH
-    # Read bytes and decode per line: raw invalid UTF-8 in the journal must be
-    # reported as tampering, not raise out of the integrity check itself.
-    with open(path, "rb") as fh:
-        for lineno, raw_line in enumerate(fh, start=1):
-            try:
-                line = raw_line.decode("utf-8").strip()
-            except UnicodeDecodeError as exc:
-                bad(expected_seq, f"line {lineno}: invalid UTF-8: {exc}")
-                expected_seq += 1
-                expected_prev = _BROKEN
-                continue
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except (ValueError, RecursionError) as exc:
-                bad(expected_seq, f"line {lineno}: invalid JSON: {exc}")
-                expected_seq += 1
-                expected_prev = _BROKEN  # nothing may chain onto a bad line
-                continue
-            if not isinstance(ev, dict):
-                bad(expected_seq, f"line {lineno}: event is not a JSON object")
-                expected_seq += 1
-                expected_prev = _BROKEN
-                continue
-            # The stored bytes are authoritative, not just the parsed object:
-            # re-serializing must reproduce the line exactly. This catches
-            # duplicate keys, non-canonical number literals, and any other
-            # content smuggled past json.loads' last-value-wins behavior.
-            try:
-                if canonical_json(ev) != line:
-                    bad(ev.get("seq"), f"line {lineno}: non-canonical encoding")
-            except (ValueError, TypeError) as exc:
-                bad(ev.get("seq"), f"line {lineno}: uncanonicalizable content: {exc}")
-            count += 1
-            seq = ev.get("seq")
-            if seq != expected_seq:
-                bad(seq, f"seq discontinuity at line {lineno}: expected {expected_seq}, got {seq}")
-            if expected_prev is _BROKEN:
-                bad(seq, f"seq {seq}: unverifiable, chain broken at an earlier line")
-            elif ev.get("prev_hash") != expected_prev:
-                bad(seq, f"prev_hash mismatch at seq {seq}")
-            try:
-                actual = event_hash(ev)
-            except (ValueError, TypeError):
-                actual = None  # already reported as uncanonicalizable above
-            if actual is None or ev.get("hash") != actual:
-                bad(seq, f"hash mismatch at seq {seq} (content tampered)")
-            expected_seq = (seq if isinstance(seq, int) else expected_seq) + 1
-            expected_prev = ev.get("hash", GENESIS_PREV_HASH)
+    expected_prev: Any = GENESIS_PREV_HASH
+
+    for line in _read_journal(path):
+        if line.error is not None:
+            # An unreadable line still occupies a position in the sequence, and
+            # nothing may chain onto it, or a forged event could re-link to
+            # genesis and look valid.
+            record([(expected_seq, line.error)])
+            expected_seq += 1
+            expected_prev = _BROKEN
+            continue
+
+        record(_encoding_errors(line))
+        count += 1
+        record(_chain_errors(line, expected_seq, expected_prev))
+
+        event = line.event or {}
+        seq = event.get("seq")
+        expected_seq = (seq if isinstance(seq, int) else expected_seq) + 1
+        expected_prev = event.get("hash", GENESIS_PREV_HASH)
 
     return VerifyResult(
         ok=not errors, count=count, first_bad_seq=first_bad_seq, errors=errors

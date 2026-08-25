@@ -132,3 +132,37 @@ def test_validate_catches_errors():
     assert any("session_id" in e for e in validate(bad))
 
     assert validate("not a dict") == ["event is not a dict"]
+
+
+@pytest.mark.parametrize("key, value", [
+    ("type", []), ("type", {}), ("type", ["tool_call"]),
+    ("status", []), ("status", {}), ("status", {"ok": 1}),
+])
+def test_validate_reports_unhashable_values_instead_of_crashing(key, value):
+    """validate() promises a list of problems, so it must never raise.
+
+    `x in some_set` raises TypeError when x is unhashable, and a corrupt or
+    hostile journal can easily carry a list where a string belongs. Before this
+    was fixed, validating such an event took the caller down with a TypeError
+    rather than telling them the event was invalid, which is the same failure
+    mode that verify() was fixed for in 0.1.2: an integrity check must never
+    terminate by exception.
+    """
+    event = new_event("tool_call", "s", "a", "f", tool={"name": "t"})
+    event[key] = value
+    errors = validate(event)
+    assert isinstance(errors, list)
+    assert any(e.startswith(f"{key} must be one of") for e in errors), errors
+
+
+def test_validate_never_raises_on_arbitrary_junk():
+    """Whatever comes out of a journal, validate answers rather than throws."""
+    junk = [None, [], "str", 42, 0.5, True, set(), object()]
+    base = new_event("tool_call", "s", "a", "f", tool={"name": "t"})
+    for key in sorted(base):
+        for value in junk:
+            event = dict(base)
+            event[key] = value
+            assert isinstance(validate(event), list)
+    for whole in (None, [], "str", 42, object()):
+        assert validate(whole) == ["event is not a dict"]

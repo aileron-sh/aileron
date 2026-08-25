@@ -126,6 +126,116 @@ def _haystack(
     return entry
 
 
+# One matcher per kind of clause.
+#
+# A rule clause is a key and a value, and the key's suffix decides how to
+# compare them: `tool.name` is equality, `tool.arguments_contains` is substring,
+# `tool.arguments_regex` is a pattern, `severity_gte` is an ordering. That used
+# to be one function with four branches sharing local state. Splitting it means
+# each comparison can be read, and tested, on its own.
+#
+# Every matcher has the same shape: given the resolved path, the value written
+# in the rule, the event, and the per-event memo, does this clause hold. None of
+# them raise: a clause that cannot be evaluated is a clause that does not match,
+# because a rule engine that throws on a malformed rule stops the proxy.
+
+
+def _memo(cache: dict | None, kind: str, path: str) -> dict | None:
+    """Per-event scratch space for "did we already look for this text".
+
+    Rules share needles and literals, and scanning a large payload is not free,
+    so each distinct string is looked for once per event rather than once per
+    rule. Returns None when there is no cache, which simply means look every
+    time.
+    """
+    if cache is None:
+        return None
+    return cache.setdefault((kind, path), {})
+
+
+def _match_severity_gte(_path: str, clause_value: object, event: dict,
+                        _cache: dict | None) -> bool:
+    """Event severity is at least the level the rule names."""
+    found, value = _lookup(event, "severity")
+    if not found or not isinstance(value, str):
+        return False
+    if value not in SEVERITY_ORDER or clause_value not in SEVERITY_ORDER:
+        return False
+    return SEVERITY_ORDER.index(value) >= SEVERITY_ORDER.index(clause_value)
+
+
+def _match_contains(path: str, clause_value: object, event: dict,
+                    cache: dict | None) -> bool:
+    """Any one of the rule's needles appears in the text at ``path``."""
+    found, hay = _haystack(event, path, cache, form="lower")
+    if not found:
+        return False
+    needles = clause_value if isinstance(clause_value, list) else [clause_value]
+    seen = _memo(cache, "needles", path)
+    for needle in needles:
+        if not isinstance(needle, str):
+            continue
+        if seen is None:
+            if needle.lower() in hay:
+                return True
+            continue
+        hit = seen.get(needle)
+        if hit is None:
+            hit = needle.lower() in hay
+            seen[needle] = hit
+        if hit:
+            return True
+    return False
+
+
+def _match_regex(path: str, clause_value: object, event: dict,
+                 cache: dict | None) -> bool:
+    """The rule's pattern matches the text at ``path``."""
+    if not isinstance(clause_value, str):
+        return False
+    found, hay = _haystack(event, path, cache)
+    if not found:
+        return False
+
+    # Most calls cannot possibly match most rules. Asking the cheap question
+    # first turns roughly twenty full scans of the payload into a handful of
+    # substring searches. can_skip only says yes when it has proven the pattern
+    # cannot match, so this changes speed, not verdicts.
+    _, folded = _haystack(event, path, cache, form="fold")
+    if prefilter.can_skip(clause_value, folded, _memo(cache, "literals", path)):
+        return False
+
+    try:
+        return re.search(clause_value, hay) is not None
+    except re.error:
+        # A rule that does not compile matches nothing rather than taking the
+        # enforcement path down with it.
+        return False
+
+
+def _match_equals(path: str, clause_value: object, event: dict,
+                  _cache: dict | None) -> bool:
+    """The value at ``path`` equals what the rule says."""
+    found, value = _lookup(event, path)
+    return found and value == clause_value
+
+
+def _matcher_for(key: str):
+    """Pick the comparison for a clause key, and the path it reads.
+
+    Suffixes are checked before falling back to equality, so `foo_contains`
+    is a substring clause on `foo` rather than an equality clause on a field
+    literally named `foo_contains`.
+    """
+    if key == _SEVERITY_GTE:
+        return _match_severity_gte, "severity"
+    if key.endswith(_CONTAINS_SUFFIX):
+        return _match_contains, key[: -len(_CONTAINS_SUFFIX)]
+    if key.endswith(_REGEX_SUFFIX):
+        return _match_regex, key[: -len(_REGEX_SUFFIX)]
+    return _match_equals, key
+
+
 def _clause_matches(
     key: str,
     clause_value: object,
@@ -133,66 +243,8 @@ def _clause_matches(
     cache: dict | None = None,
 ) -> bool:
     """Evaluate one match clause against the event."""
-    if key == _SEVERITY_GTE:
-        found, value = _lookup(event, "severity")
-        if not found or not isinstance(value, str):
-            return False
-        if value not in SEVERITY_ORDER or clause_value not in SEVERITY_ORDER:
-            return False
-        return SEVERITY_ORDER.index(value) >= SEVERITY_ORDER.index(clause_value)
-
-    if key.endswith(_CONTAINS_SUFFIX):
-        path = key[: -len(_CONTAINS_SUFFIX)]
-        found, hay = _haystack(event, path, cache, form="lower")
-        if not found:
-            return False
-        needles = clause_value if isinstance(clause_value, list) else [clause_value]
-        # Rules share needles, and a scan of a large payload is not free, so
-        # look each one up once per event rather than once per rule.
-        seen = cache.setdefault(("needles", path), {}) if cache is not None else None
-        for needle in needles:
-            if not isinstance(needle, str):
-                continue
-            if seen is None:
-                if needle.lower() in hay:
-                    return True
-                continue
-            hit = seen.get(needle)
-            if hit is None:
-                hit = needle.lower() in hay
-                seen[needle] = hit
-            if hit:
-                return True
-        return False
-
-    if key.endswith(_REGEX_SUFFIX):
-        if not isinstance(clause_value, str):
-            return False
-        path = key[: -len(_REGEX_SUFFIX)]
-        found, hay = _haystack(event, path, cache)
-        if not found:
-            return False
-
-        # Most calls cannot possibly match most rules. Asking the cheap
-        # question first turns roughly twenty full scans of the payload into
-        # a handful of substring searches. can_skip only says yes when it has
-        # proven the pattern cannot match, so this changes speed, not verdicts.
-        _, folded = _haystack(event, path, cache, form="fold")
-        seen = None
-        if cache is not None:
-            seen = cache.setdefault(("literals", path), {})
-        if prefilter.can_skip(clause_value, folded, seen):
-            return False
-
-        try:
-            return re.search(clause_value, hay) is not None
-        except re.error:
-            return False
-
-    found, value = _lookup(event, key)
-    if not found:
-        return False
-    return value == clause_value
+    matcher, path = _matcher_for(key)
+    return matcher(path, clause_value, event, cache)
 
 
 def matches(rule: Rule, event: dict, cache: dict | None = None) -> bool:

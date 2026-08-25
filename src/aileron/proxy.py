@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, BinaryIO
 
 # RFC 7230 field-name followed by a colon. Header lines must look like headers.
@@ -143,6 +144,171 @@ def _frame(payload: bytes, wire: bytes) -> bytes:
     return b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload
 
 
+# --- what a message means, decided without touching any IO -------------------
+#
+# The loop below used to do all of this inline, which made the enforcement
+# rules hard to find among the plumbing. These are pure functions of the parsed
+# message: same input, same answer, no sockets, no threads, no journal. That
+# also makes them directly testable, which matters more here than anywhere else
+# in the codebase.
+
+
+def _tool_calls(msg: Any) -> list[dict]:
+    """Every tools/call in a message, batched or not.
+
+    A message may carry one call (an object) or several (a JSON-RPC batch
+    array). Calls without an id are included deliberately: the child dispatches
+    on `method`, so an id-less call executes exactly the same and must be
+    policed exactly the same.
+    """
+    candidates = msg if isinstance(msg, list) else [msg]
+    return [m for m in candidates
+            if isinstance(m, dict) and m.get("method") == "tools/call"]
+
+
+def _call_arguments(call: dict) -> Any:
+    """The arguments to police for one call.
+
+    ``params`` may legally be an array (positional) or, from a hostile client,
+    any JSON type at all. Never assume it is a mapping. When it is not, the
+    whole params value is treated as the arguments so it stays auditable and
+    visible to policy rather than silently becoming None.
+    """
+    raw_params = call.get("params")
+    if isinstance(raw_params, dict):
+        return raw_params.get("arguments")
+    return raw_params
+
+
+def _call_event(call: dict, session_id: str, agent_name: str, framework: str) -> dict:
+    """Build the journal event for one tools/call.
+
+    Arguments are always attached in memory so policy rules can match on
+    content; ChainLog.append strips them at persist time unless the log was
+    opened with capture_content=True.
+    """
+    raw_params = call.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
+    arguments = _call_arguments(call)
+    return events.new_event(
+        "tool_call",
+        session_id,
+        agent_name,
+        framework,
+        tool={
+            "name": params.get("name"),
+            "arguments": arguments,
+            "arguments_digest": events.digest(arguments),
+        },
+        meta={"transport": "mcp-stdio"},
+    )
+
+
+@dataclass
+class _Policed:
+    """Policy's verdict on one client message.
+
+    ``staged`` holds the calls cleared to run, as (id, event) pairs. When
+    ``blocked_event`` is set the whole message is refused, and the calls staged
+    before it are discarded rather than journaled: they never reached the child,
+    so recording them as having happened would be a lie.
+    """
+
+    staged: list[tuple[Any, dict]]
+    blocked_event: dict | None = None
+    blocked_rule: str | None = None
+    blocked_id: Any = None
+
+
+def _police(calls: list[dict], rules: list | None, session_id: str,
+            agent_name: str, framework: str) -> _Policed:
+    """Apply policy to every call in a message, stopping at the first block."""
+    staged: list[tuple[Any, dict]] = []
+    for call in calls:
+        event = _call_event(call, session_id, agent_name, framework)
+        if rules:
+            decision = decide(event, rules)
+            if decision.action == "block":
+                rule_id = decision.rule_ids[0]
+                event["status"] = "blocked"
+                event["policy"] = {"rule_id": rule_id, "action": "block"}
+                return _Policed(staged, event, rule_id, call.get("id"))
+            if decision.rule_ids:
+                event["policy"] = {
+                    "rule_id": decision.rule_ids[0],
+                    "action": decision.action,
+                }
+        staged.append((call.get("id"), event))
+    return _Policed(staged)
+
+
+def _denial(msg: Any, calls: list[dict], blocked_id: Any, rule_id: str) -> Any:
+    """The JSON-RPC reply refusing a message that contained a blocked call.
+
+    The whole message is refused rather than forwarding a partial batch, so the
+    child sees none of it. The denial is attributed to the call that actually
+    matched, and every other request in the batch is answered too, so nothing is
+    left hanging waiting for a reply that will never come.
+    """
+    denial = {"jsonrpc": "2.0", "id": blocked_id,
+              "error": {"code": -32000,
+                        "message": f"blocked by aileron rule {rule_id}"}}
+    if not isinstance(msg, list):
+        return denial
+    others = [
+        {"jsonrpc": "2.0", "id": call.get("id"),
+         "error": {"code": -32000,
+                   "message": "refused: batch contained a blocked call"}}
+        for call in calls if call.get("id") != blocked_id
+    ]
+    return [denial] + others
+
+
+def _is_response(msg: Any) -> bool:
+    """True when this is a JSON-RPC response we can match to a pending call.
+
+    The id has to be usable as a dict key. An untrusted child could send a list
+    or dict there and take the reader thread down with a TypeError, which would
+    stop response recording for the whole session.
+    """
+    return (
+        isinstance(msg, dict)
+        and isinstance(msg.get("id"), (str, int, float))
+        and not isinstance(msg.get("id"), bool)
+        and ("result" in msg or "error" in msg)
+    )
+
+
+def _error_record(err: Any, capture_content: bool) -> Any:
+    """What to journal for a JSON-RPC error.
+
+    An error's free-form ``data`` can echo result content, so honor the
+    digest-only promise unless content capture is switched on.
+    """
+    if capture_content:
+        return err
+    if isinstance(err, dict):
+        return {"code": err.get("code"), "digest": events.digest(err)}
+    return {"digest": events.digest(err)}
+
+
+def _apply_response(event: dict, msg: dict, started: float,
+                    capture_content: bool) -> dict:
+    """Fill in an event from the child's response to it."""
+    event["latency_ms"] = (time.perf_counter() - started) * 1000.0
+    if "error" in msg:
+        event["status"] = "error"
+        event["meta"] = {**event.get("meta", {}),
+                         "error": _error_record(msg["error"], capture_content)}
+    else:
+        event["status"] = "ok"
+        result = msg.get("result")
+        event["result_digest"] = events.digest(result)
+        if capture_content:
+            event["result"] = result
+    return event
+
+
 def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int:
     """Run the MCP stdio proxy. Returns the child's exit code.
 
@@ -186,43 +352,14 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                     msg = json.loads(payload)
                 except Exception:
                     msg = None
-                # A response id must be usable as a dict key; an untrusted
-                # child could send a list/dict here and take the thread down.
-                if (
-                    isinstance(msg, dict)
-                    and isinstance(msg.get("id"), (str, int, float))
-                    and not isinstance(msg.get("id"), bool)
-                    and ("result" in msg or "error" in msg)
-                ):
+                if _is_response(msg):
                     with lock:
                         info = pending.pop(msg.get("id"), None)
                     if info is not None:
-                        ev = info["event"]
-                        ev["latency_ms"] = (
-                            time.perf_counter() - info["started"]
-                        ) * 1000.0
-                        if "error" in msg:
-                            ev["status"] = "error"
-                            err = msg["error"]
-                            # A JSON-RPC error's free-form `data` can echo
-                            # result content; honor the digest-only promise
-                            # unless content capture is on.
-                            if getattr(log, "capture_content", False):
-                                recorded = err
-                            elif isinstance(err, dict):
-                                recorded = {
-                                    "code": err.get("code"),
-                                    "digest": events.digest(err),
-                                }
-                            else:
-                                recorded = {"digest": events.digest(err)}
-                            ev["meta"] = {**ev.get("meta", {}), "error": recorded}
-                        else:
-                            ev["status"] = "ok"
-                            result = msg.get("result")
-                            ev["result_digest"] = events.digest(result)
-                            if getattr(log, "capture_content", False):
-                                ev["result"] = result
+                        ev = _apply_response(
+                            info["event"], msg, info["started"],
+                            getattr(log, "capture_content", False),
+                        )
                         try:
                             append(ev)
                         except Exception as exc:
@@ -279,78 +416,17 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 )
                 continue
 
-            # A message may carry one call (dict) or several (JSON-RPC batch
-            # array). Police every tools/call in it, whether or not it has an
-            # id: the child dispatches on `method`, so an id-less call executes
-            # just the same.
-            calls = [m for m in (msg if isinstance(msg, list) else [msg])
-                     if isinstance(m, dict) and m.get("method") == "tools/call"]
+            calls = _tool_calls(msg)
+            policed = _police(calls, rules, session_id, agent_name, framework)
 
-            blocked_rule: str | None = None
-            blocked_id: Any = None
-            staged: list[tuple[Any, dict]] = []
-            for call in calls:
-                # params may legally be an array (positional) or, from a hostile
-                # client, any JSON type. Never assume it is a mapping.
-                raw_params = call.get("params")
-                params = raw_params if isinstance(raw_params, dict) else {}
-                arguments = params.get("arguments")
-                if arguments is None and raw_params is not None and not isinstance(
-                    raw_params, dict
-                ):
-                    arguments = raw_params  # keep it auditable and policy-visible
-                # Arguments are always attached in memory so policy rules can
-                # match on content; ChainLog.append strips them at persist
-                # time unless the log was opened with capture_content=True.
-                ev = events.new_event(
-                    "tool_call",
-                    session_id,
-                    agent_name,
-                    framework,
-                    tool={
-                        "name": params.get("name"),
-                        "arguments": arguments,
-                        "arguments_digest": events.digest(arguments),
-                    },
-                    meta={"transport": "mcp-stdio"},
-                )
-                if rules:
-                    decision = decide(ev, rules)
-                    if decision.action == "block":
-                        blocked_rule = decision.rule_ids[0]
-                        blocked_id = call.get("id")
-                        ev["status"] = "blocked"
-                        ev["policy"] = {"rule_id": blocked_rule, "action": "block"}
-                        append(ev)
-                        break  # whole message is refused; see below
-                    if decision.rule_ids:
-                        ev["policy"] = {
-                            "rule_id": decision.rule_ids[0],
-                            "action": decision.action,
-                        }
-                staged.append((call.get("id"), ev))
-
-            if blocked_rule is not None:
-                # Refuse the entire message rather than forwarding a partial
-                # batch: the child must not see any of it. Attribute the denial
-                # to the call that actually matched, and answer the others so no
-                # request in a batch is left hanging.
-                denial = {"jsonrpc": "2.0", "id": blocked_id,
-                          "error": {"code": -32000,
-                                    "message": f"blocked by aileron rule {blocked_rule}"}}
-                if isinstance(msg, list):
-                    others = [
-                        {"jsonrpc": "2.0", "id": c.get("id"),
-                         "error": {"code": -32000,
-                                   "message": "refused: batch contained a blocked call"}}
-                        for c in calls if c.get("id") != blocked_id
-                    ]
-                    _respond_raw(client_out, wire, [denial] + others)
-                else:
-                    _respond(client_out, wire, denial)
+            if policed.blocked_event is not None:
+                append(policed.blocked_event)
+                _respond_raw(client_out, wire,
+                             _denial(msg, calls, policed.blocked_id,
+                                     policed.blocked_rule))
                 continue  # child NOT invoked
 
-            for call_id, ev in staged:
+            for call_id, ev in policed.staged:
                 if call_id is None:
                     # No id means no response will come back to complete this
                     # event, so journal it now rather than losing it.
