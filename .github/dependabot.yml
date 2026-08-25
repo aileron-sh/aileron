@@ -1,0 +1,41 @@
+version: 2
+
+# These actions went four majors stale without anyone noticing, until GitHub
+# started warning that Node 20 was going away and the workflows were about to
+# break. Nothing was watching, so this watches.
+#
+# Monthly and grouped on purpose. This is a small project with one maintainer,
+# and a stream of separate pull requests is the fastest way to make an update
+# bot something you learn to ignore. One pull request a month, covering
+# everything, is a thing a person will actually read.
+#
+# The action versions are the ones that matter here. A workflow that stops
+# running is a release that cannot ship and a benchmark that stops guarding.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+
+  # Runtime dependencies are pyyaml and cryptography, and cryptography is the
+  # one that gets CVEs. Security updates arrive regardless of this schedule.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
