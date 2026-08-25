@@ -30,7 +30,15 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.24"
+          # Not a pinned version, on purpose. setup-go v6 started forcing
+          # GOTOOLCHAIN=local, which stops Go from fetching a newer toolchain on
+          # demand. The registry publisher already requires Go 1.26, so a pinned
+          # 1.24 stopped building the moment the action was updated, and it
+          # would have failed during a release rather than here. Nothing in this
+          # repository is written in Go; this step exists only to build a third
+          # party CLI whose Go requirement will keep moving, so tracking stable
+          # is both simpler and less likely to break.
+          go-version: stable
 
       - name: Install the publisher
         # Built from source so the Go checksum database verifies it, rather
