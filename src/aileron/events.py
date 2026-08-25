@@ -208,9 +208,8 @@ def _check_tool(value: Any) -> list[str]:
     elif not isinstance(value["name"], str):
         errors.append("tool.name must be a string")
     arguments_digest = value.get("arguments_digest")
-    if "arguments_digest" in value and arguments_digest is not None:
-        if not _HASH_RE.match(str(arguments_digest)):
-            errors.append("tool.arguments_digest must be a sha256 hex string")
+    if arguments_digest is not None and not _HASH_RE.match(str(arguments_digest)):
+        errors.append("tool.arguments_digest must be a sha256 hex string")
     return errors
 
 

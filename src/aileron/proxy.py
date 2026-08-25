@@ -19,11 +19,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
-# RFC 7230 field-name followed by a colon. Header lines must look like headers.
-_HEADER_RE = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+:")
-
 from aileron import events
 from aileron.policy import decide
+
+# RFC 7230 field-name followed by a colon. Header lines must look like headers.
+_HEADER_RE = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+:")
 
 # Refuse absurd frames rather than allocating for them: the proxy is the
 # enforcement point, so exhausting it is a way to stop mediation.
