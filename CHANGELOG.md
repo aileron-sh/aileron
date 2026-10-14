@@ -42,6 +42,13 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   example runs with the standard library when LiveKit is not installed.
   `tests/test_examples.py` exercises the helpers with a fake async tool.
 
+### Internal
+
+- Added a ruff configuration (`[tool.ruff]` in `pyproject.toml`, rule set and
+  reasoning documented inline) and a `lint` job in CI that runs `ruff check .`.
+  The code was brought into compliance with mechanical fixes only; no runtime
+  behaviour changed. `ruff format` is not enforced.
+
 ## [0.1.5] - 2026-08-25
 
 **Performance release.** Matching the bundled rule pack against a large payload

@@ -51,7 +51,8 @@ def test_content_stripped_by_default_kept_when_opted_in(tmp_path):
     # digests kept
     assert ev["tool"]["arguments_digest"] is not None
     assert ev["result_digest"] is not None
-    on_disk = json.loads(open(path).readline())
+    with open(path) as fh:
+        on_disk = json.loads(fh.readline())
     assert on_disk["tool"]["arguments"] is None
     assert on_disk["result"] is None
 
@@ -88,11 +89,11 @@ def test_tamper_detection_first_bad_seq(tmp_path):
     for i in range(5):
         log.append(make_ev(i))
 
-    lines = open(path, encoding="utf-8").read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     ev = json.loads(lines[2])  # seq 3
     ev["status"] = "blocked"  # tamper content without fixing hash
     lines[2] = json.dumps(ev, sort_keys=True, separators=(",", ":"))
-    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     result = verify(path)
     assert result.ok is False
@@ -106,11 +107,11 @@ def test_tamper_prev_hash_link(tmp_path):
     log = ChainLog(path)
     for i in range(3):
         log.append(make_ev(i))
-    lines = open(path, encoding="utf-8").read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     ev = json.loads(lines[1])
     ev["prev_hash"] = "1" * 64
     lines[1] = json.dumps(ev, sort_keys=True, separators=(",", ":"))
-    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     result = verify(path)
     assert result.ok is False
     assert result.first_bad_seq == 2
@@ -121,9 +122,9 @@ def test_seq_discontinuity_detected(tmp_path):
     log = ChainLog(path)
     for i in range(3):
         log.append(make_ev(i))
-    lines = open(path, encoding="utf-8").read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     del lines[1]  # drop seq 2
-    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     result = verify(path)
     assert result.ok is False
 

@@ -161,7 +161,7 @@ def to_otlp_spans(events: list[dict]) -> list[dict]:
     session groups into one trace.
     """
     spans = []
-    for event, span in zip(events, to_otel_spans(events)):
+    for event, span in zip(events, to_otel_spans(events), strict=False):
         spans.append(
             {
                 "traceId": _hex_id(f"aileron.session:{event.get('session_id')}", 16),

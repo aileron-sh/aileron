@@ -36,7 +36,9 @@ Changelog = "https://github.com/aileron-sh/aileron/blob/main/CHANGELOG.md"
 Security = "https://github.com/aileron-sh/aileron/blob/main/SECURITY.md"
 
 [project.optional-dependencies]
-dev = ["pytest"]
+# ruff is pinned to the exact version CI installs (see .github/workflows/ci.yml)
+# so a local run and the CI run always agree. Bump both together.
+dev = ["pytest", "ruff==0.16.4"]
 
 [project.scripts]
 aileron = "aileron.cli:main"
@@ -46,3 +48,74 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 aileron = ["py.typed", "rules/examples/*.yml", "rules/examples/*.md"]
+
+# ---------------------------------------------------------------------------
+# Lint configuration (ruff). CI runs `ruff check .` and fails on any finding.
+# Formatting (`ruff format`) is deliberately not enforced; see CONTRIBUTING.md.
+#
+# Rule selection, and the reasoning:
+#
+#   E, F, W   pycodestyle and pyflakes: syntax errors, undefined and unused
+#             names, and whitespace errors. The baseline every Python project
+#             should have.
+#   I         import ordering (isort), so import diffs stay mechanical.
+#   UP        pyupgrade: modern syntax that Python 3.10 already supports.
+#   B         bugbear: likely bugs such as mutable defaults and unused loop
+#             variables.
+#   SIM       simplify: readability rewrites that keep behaviour, for example
+#             files opened without a context manager (SIM115).
+#   RUF       ruff's own rules, including unused `noqa` directives (RUF100)
+#             so suppressions cannot silently outlive the finding they hid.
+#   S         bandit: this is a security tool, so the security linter runs on
+#             it. Findings that are the product's purpose (the proxy spawning
+#             the child it mediates) are suppressed one line at a time with a
+#             `# noqa` that says why, never with a blanket ignore.
+#
+# Not selected, on purpose:
+#
+#   BLE (blind except) and TRY are not selected. The broad `except Exception`
+#   blocks in proxy.py, signing.py, mcpserver.py and prefilter.py are
+#   deliberate fail-closed catches: on those paths any exception must stop
+#   mediation or fail verification rather than propagate. CLAUDE.md explains
+#   the posture. A linter that asks for narrower catches there is asking for
+#   a less safe product.
+#
+# `line-length` is 120 because the longest line in the tree measured 118 when
+# this configuration landed. The intent is to stop lines growing, not to
+# reflow existing code; a lower limit would have forced edits that carry no
+# behaviour change and make review harder.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S"]
+ignore = [
+    # try/except/pass on a cleanup path names the exception it swallows;
+    # contextlib.suppress would hide that and add a context manager to the
+    # proxy's shutdown path for no change in behaviour.
+    "SIM105",
+    # `list(x)[0]` fails with IndexError on an empty log, `next(iter(x))`
+    # fails with StopIteration. Only tests use the former, and the rewrite
+    # changes the failure mode for nothing.
+    "RUF015",
+]
+# The prefilter exists because these three codepoints fold to ASCII under
+# re.IGNORECASE but not under str.lower() or str.casefold(). The test strings
+# and the comments that explain them use the characters on purpose.
+allowed-confusables = ["ı", "ſ", "K"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: pytest tests are built out of assert statements.
+# S108: tests pass literal /tmp paths as tool-call payloads and as
+#       path-traversal probes; nothing is opened there. Real files live in
+#       tmp_path fixtures.
+# S311: tests use random for fuzz inputs, not for anything secret.
+# S603: the live MCP test spawns the proxy under test.
+"tests/*" = ["S101", "S108", "S311", "S603"]
+# Maintainer scripts, not library code. benchmark.py spawns the child it
+# measures and asserts on its own sanity checks; collect_metrics.py talks to
+# the GitHub and PyPI APIs by design (the library itself never makes a
+# network call, and S310 keeps it honest).
+"scripts/*" = ["S101", "S310", "S603"]

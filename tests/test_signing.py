@@ -20,7 +20,7 @@ from aileron.signing import (
 def make_log(tmp_path, name="chain.jsonl", n=3):
     path = str(tmp_path / name)
     log = ChainLog(path)
-    for i in range(n):
+    for _ in range(n):
         log.append(new_event("tool_call", "s", "bot", "fw", tool={"name": "t"}))
     return path
 
@@ -30,8 +30,8 @@ def test_generate_keypair(tmp_path):
     assert os.path.exists(key_path) and os.path.exists(pub_path)
     assert key_path.endswith("aileron_ed25519.key")
     assert pub_path.endswith("aileron_ed25519.pub")
-    assert b"PRIVATE KEY" in open(key_path, "rb").read()
-    assert b"PUBLIC KEY" in open(pub_path, "rb").read()
+    assert b"PRIVATE KEY" in Path(key_path).read_bytes()
+    assert b"PUBLIC KEY" in Path(pub_path).read_bytes()
 
 
 def test_sign_and_verify_roundtrip(tmp_path):
@@ -47,7 +47,7 @@ def test_sign_and_verify_roundtrip(tmp_path):
 
     ckpt_file = f"{log_path}.checkpoints.jsonl"
     assert os.path.exists(ckpt_file)
-    lines = open(ckpt_file).read().splitlines()
+    lines = Path(ckpt_file).read_text().splitlines()
     assert json.loads(lines[-1]) == ckpt
 
     # verify with private key path or public key path
@@ -75,7 +75,7 @@ def test_verify_checkpoint_prefix_semantics(tmp_path):
     assert verify_checkpoint(log_path, key_path) is True
 
     # Truncate below the checkpointed count: must fail.
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     with open(log_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines[:2]) + "\n")
     assert verify_checkpoint(log_path, key_path) is False
@@ -86,11 +86,11 @@ def test_verify_checkpoint_tampered_log_fails(tmp_path):
     log_path = make_log(tmp_path)
     sign_checkpoint(log_path, key_path)
 
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     ev = json.loads(lines[0])
     ev["status"] = "blocked"
     lines[0] = json.dumps(ev, sort_keys=True, separators=(",", ":"))
-    open(log_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(log_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert verify_checkpoint(log_path, key_path) is False
 
@@ -112,9 +112,9 @@ def test_verify_checkpoint_no_checkpoints_file(tmp_path):
 def test_sign_refuses_broken_chain(tmp_path):
     key_path, _ = generate_keypair(str(tmp_path))
     log_path = make_log(tmp_path)
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     del lines[1]
-    open(log_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(log_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(ValueError):
         sign_checkpoint(log_path, key_path)
 
@@ -150,10 +150,10 @@ def test_checkpoint_reordering_cannot_roll_back_coverage(tmp_path):
 
     # Reorder so the narrow checkpoint is last, then truncate to it.
     ckpt = f"{log_path}.checkpoints.jsonl"
-    lines = open(ckpt, encoding="utf-8").read().splitlines()
-    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
-    kept = open(log_path, encoding="utf-8").read().splitlines()[:3]
-    open(log_path, "w", encoding="utf-8").write("\n".join(kept) + "\n")
+    lines = Path(ckpt).read_text(encoding="utf-8").splitlines()
+    Path(ckpt).write_text("\n".join([lines[1], lines[0]]) + "\n", encoding="utf-8")
+    kept = Path(log_path).read_text(encoding="utf-8").splitlines()[:3]
+    Path(log_path).write_text("\n".join(kept) + "\n", encoding="utf-8")
     assert verify_checkpoint(log_path, key_path) is False
 
 
@@ -188,8 +188,8 @@ def test_deleting_an_intermediate_checkpoint_is_detected(tmp_path):
     assert verify_checkpoint(log_path, key_path) is True
 
     ckpt = f"{log_path}.checkpoints.jsonl"
-    lines = open(ckpt, encoding="utf-8").read().splitlines()
-    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[0], lines[2]]) + "\n")
+    lines = Path(ckpt).read_text(encoding="utf-8").splitlines()
+    Path(ckpt).write_text("\n".join([lines[0], lines[2]]) + "\n", encoding="utf-8")
     assert verify_checkpoint(log_path, key_path) is False
 
 
@@ -198,13 +198,13 @@ def test_reordering_alone_still_verifies_when_the_log_is_intact(tmp_path):
     key_path, _pub = generate_keypair(str(tmp_path))
     log_path = str(tmp_path / "a.jsonl")
     log = ChainLog(log_path)
-    for c in range(2):
-        for i in range(3):
+    for _c in range(2):
+        for _i in range(3):
             log.append(new_event("tool_call", "s", "b", "f", tool={"name": "t"}))
         sign_checkpoint(log_path, key_path)
     ckpt = f"{log_path}.checkpoints.jsonl"
-    lines = open(ckpt, encoding="utf-8").read().splitlines()
-    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
+    lines = Path(ckpt).read_text(encoding="utf-8").splitlines()
+    Path(ckpt).write_text("\n".join([lines[1], lines[0]]) + "\n", encoding="utf-8")
     assert verify_checkpoint(log_path, key_path) is True
 
 

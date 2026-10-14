@@ -5,12 +5,13 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron.chainlog import ChainLog  # noqa: E402
-from aileron.events import new_event  # noqa: E402
-from aileron.report import render_html  # noqa: E402
+from aileron.chainlog import ChainLog
+from aileron.events import new_event
+from aileron.report import render_html
 
 
 @dataclass
@@ -129,7 +130,7 @@ def test_badge_escapes_verify_result_fields(tmp_path):
         ok = False
         count = 0
         first_bad_seq = '<img src=x onerror=alert(1)>'
-        errors = []
+        errors: ClassVar[list] = []
 
     out = tmp_path / "r.html"
     render_html([], VR(), str(out))
