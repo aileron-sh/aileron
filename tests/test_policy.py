@@ -10,9 +10,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron import bundled_rules_dir  # noqa: E402
-from aileron import policy  # noqa: E402
-from aileron.policy import (  # noqa: E402
+from aileron import (
+    bundled_rules_dir,
+    policy,
+)
+from aileron.policy import (
     SEVERITY_ORDER,
     Decision,
     Rule,

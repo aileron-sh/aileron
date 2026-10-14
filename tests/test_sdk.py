@@ -9,10 +9,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from aileron import events  # noqa: E402
-from aileron.chainlog import ChainLog, verify  # noqa: E402
-from aileron.policy import Rule  # noqa: E402
-from aileron.sdk import PolicyBlocked, track, track_agent  # noqa: E402
+from aileron import events
+from aileron.chainlog import ChainLog, verify
+from aileron.policy import Rule
+from aileron.sdk import PolicyBlocked, track, track_agent
 
 
 def test_track_happy_path(tmp_path):
@@ -184,16 +184,15 @@ def test_block_rule_on_arguments_in_default_digest_mode(tmp_path):
     # Privacy posture intact: only the digest was persisted.
     assert rec["tool"]["arguments"] is None
     assert rec["tool"]["arguments_digest"]
-    assert "rm -rf" not in open(log.path, encoding="utf-8").read()
+    assert "rm -rf" not in Path(log.path).read_text(encoding="utf-8")
     assert verify(log.path).ok
 
 
 def test_agent_end_error_redacted_without_capture_content(tmp_path):
     """An exception string can embed tool arguments; digest-only must hold."""
     log = ChainLog(str(tmp_path / "c.jsonl"))
-    with pytest.raises(ValueError):
-        with track_agent("bot", "fw", log):
-            raise ValueError("SECRET_TOKEN_abc123")
-    raw = open(log.path, encoding="utf-8").read()
+    with pytest.raises(ValueError), track_agent("bot", "fw", log):
+        raise ValueError("SECRET_TOKEN_abc123")
+    raw = Path(log.path).read_text(encoding="utf-8")
     assert "SECRET_TOKEN_abc123" not in raw
     assert "ValueError" in raw

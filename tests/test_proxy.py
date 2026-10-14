@@ -13,10 +13,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from aileron import events  # noqa: E402
-from aileron.chainlog import ChainLog, verify  # noqa: E402
-from aileron.policy import Rule  # noqa: E402
-from aileron.proxy import run_proxy  # noqa: E402
+from aileron import events
+from aileron.chainlog import ChainLog, verify
+from aileron.policy import Rule
+from aileron.proxy import run_proxy
 
 CHILD_NDJSON = (
     "import sys, json\n"
@@ -259,7 +259,7 @@ def test_proxy_block_content_rule_default_digest_mode(monkeypatch, tmp_path):
     # Privacy posture intact: only the digest was persisted.
     assert recs[0]["tool"]["arguments"] is None
     assert recs[0]["tool"]["arguments_digest"]
-    assert "rm -rf" not in open(sess.log.path, encoding="utf-8").read()
+    assert "rm -rf" not in Path(sess.log.path).read_text(encoding="utf-8")
     res = verify(sess.log.path)
     assert res.ok, res.errors
 

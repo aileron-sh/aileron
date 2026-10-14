@@ -11,8 +11,9 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from aileron import events
 from aileron.chainlog import ChainLog
@@ -207,7 +208,7 @@ class AgentSession:
         self._sink: ChainLog | None = None
         self._token: Any = None
 
-    def __enter__(self) -> "AgentSession":
+    def __enter__(self) -> AgentSession:
         self._sink = self.log if self.log is not None else default_log()
         self._token = _current_agent.set((self.session_id, self.name, self.framework))
         self._sink.append(
@@ -228,7 +229,7 @@ class AgentSession:
                     ev["meta"] = {"error": f"{exc_type.__name__}: {exc}"}
                 else:
                     ev["meta"] = {"error": exc_type.__name__}
-            assert self._sink is not None
+            assert self._sink is not None  # noqa: S101 - narrows Optional; set in __enter__
             self._sink.append(ev)
         finally:
             if self._token is not None:

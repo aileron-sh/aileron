@@ -49,7 +49,7 @@ def _read_checkpoints(log_path: str) -> list[dict]:
     if not os.path.exists(ckpt_file):
         return []
     out: list[dict] = []
-    with open(ckpt_file, "r", encoding="utf-8") as fh:
+    with open(ckpt_file, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -256,7 +256,7 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
         try:
             signature = base64.b64decode(checkpoint["signature"])
             public.verify(signature, _signed_payload(checkpoint))
-        except Exception:
+        except Exception:  # noqa: S112 - an unverifiable checkpoint is dropped; the index gap check below then fails
             continue
         valid.append(checkpoint)
     if not valid:

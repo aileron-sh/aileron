@@ -31,12 +31,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron import ChainLog, bundled_rules_dir  # noqa: E402
-from aileron.chainlog import verify  # noqa: E402
-from aileron.detect import Baseline  # noqa: E402
-from aileron.events import digest, new_event  # noqa: E402
-from aileron.policy import decide, load_rules  # noqa: E402
-from aileron.report import render_html  # noqa: E402
+from aileron import ChainLog, bundled_rules_dir
+from aileron.chainlog import verify
+from aileron.detect import Baseline
+from aileron.events import digest, new_event
+from aileron.policy import decide, load_rules
+from aileron.report import render_html
 
 LOG_PATH = "incident.chain.jsonl"
 REPORT_PATH = "incident.html"

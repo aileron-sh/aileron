@@ -261,7 +261,7 @@ def _denial(msg: Any, calls: list[dict], blocked_id: Any, rule_id: str) -> Any:
                    "message": "refused: batch contained a blocked call"}}
         for call in calls if call.get("id") != blocked_id
     ]
-    return [denial] + others
+    return [denial, *others]
 
 
 def _refuse_all(msg: Any, calls: list[dict], message: str) -> Any:
@@ -332,10 +332,10 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
 
     ``log`` is a ChainLog; ``rules`` is an optional list of policy Rules.
     """
-    child = subprocess.Popen(
+    child = subprocess.Popen(  # noqa: S603 - the operator chose child_argv; spawning it is the proxy's purpose
         child_argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE
     )
-    assert child.stdin is not None and child.stdout is not None
+    assert child.stdin is not None and child.stdout is not None  # noqa: S101 - narrows Optional; both are PIPE above
     client_in = sys.stdin.buffer
     client_out = sys.stdout.buffer
     session_id = uuid.uuid4().hex

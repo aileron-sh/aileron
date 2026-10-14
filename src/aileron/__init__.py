@@ -14,15 +14,15 @@ from pathlib import Path
 __version__ = "0.1.5"
 
 __all__ = [
-    "__version__",
+    "Baseline",
     "ChainLog",
+    "PolicyBlocked",
+    "__version__",
+    "bundled_rules_dir",
+    "load_rules",
     "track",
     "track_agent",
-    "PolicyBlocked",
-    "load_rules",
-    "Baseline",
     "verify",
-    "bundled_rules_dir",
 ]
 
 

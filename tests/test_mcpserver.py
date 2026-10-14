@@ -16,9 +16,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron.chainlog import ChainLog  # noqa: E402
-from aileron.events import new_event  # noqa: E402
-from aileron.mcpserver import Denied, _resolve, serve  # noqa: E402
+from aileron.chainlog import ChainLog
+from aileron.events import new_event
+from aileron.mcpserver import Denied, _resolve, serve
 
 
 def _journal(root: Path, name="run.chain.jsonl", tools=("read_file", "shell")):
@@ -133,7 +133,7 @@ def test_paths_outside_the_root_are_refused(tmp_path, escape):
 
 def test_non_jsonl_files_are_refused(tmp_path):
     (tmp_path / "aileron_ed25519.key").write_text("-----BEGIN PRIVATE KEY-----\n")
-    with pytest.raises(Denied, match="only .jsonl"):
+    with pytest.raises(Denied, match=r"only \.jsonl"):
         _resolve(tmp_path, "aileron_ed25519.key")
 
 

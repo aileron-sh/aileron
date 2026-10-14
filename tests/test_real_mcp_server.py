@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron.chainlog import ChainLog, verify  # noqa: E402
+from aileron.chainlog import ChainLog, verify
 
 SERVER = ["npx", "-y", "@modelcontextprotocol/server-filesystem"]
 

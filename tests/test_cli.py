@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron.chainlog import ChainLog  # noqa: E402
-from aileron.cli import main  # noqa: E402
-from aileron.events import new_event  # noqa: E402
+from aileron.chainlog import ChainLog
+from aileron.cli import main
+from aileron.events import new_event
 
 
 def _build_chain(path: Path) -> Path:
@@ -145,7 +145,7 @@ def test_demo_builds_chain_and_report(tmp_path, capsys):
     chain = tmp_path / "demo.chain.jsonl"
     report = tmp_path / "demo-report.html"
     assert chain.exists() and report.exists()
-    events = [json.loads(l) for l in chain.read_text().splitlines() if l.strip()]
+    events = [json.loads(line) for line in chain.read_text().splitlines() if line.strip()]
     types = [e["type"] for e in events]
     assert types[0] == "agent_start" and types[-1] == "agent_end"
     assert "alert" in types
@@ -213,8 +213,8 @@ def _log_with_checkpoint(tmp_path, n=6):
 
 
 def _truncate(log_path, keep):
-    lines = open(log_path, encoding="utf-8").read().splitlines()
-    open(log_path, "w", encoding="utf-8").write("\n".join(lines[:keep]) + "\n")
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
+    Path(log_path).write_text("\n".join(lines[:keep]) + "\n", encoding="utf-8")
 
 
 def test_verify_detects_truncation_via_adjacent_checkpoints(tmp_path, capsys):
@@ -259,7 +259,7 @@ def test_report_badge_reflects_checkpoint_contradiction(tmp_path):
 def test_verify_detects_rewrite_inside_checkpointed_prefix(tmp_path, capsys):
     """Same event count, different content within the signed prefix."""
     log_path = _log_with_checkpoint(tmp_path, n=4)
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     # Rebuild a same-length but different chain, so the chain itself is valid.
     import os
     os.remove(log_path)

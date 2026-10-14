@@ -11,14 +11,14 @@ from aileron.events import EVENT_TYPES, canonical, digest, event_hash, new_event
 
 
 def test_event_types_exact():
-    assert EVENT_TYPES == {
+    assert {
         "tool_call",
         "llm_call",
         "agent_start",
         "agent_end",
         "policy_decision",
         "alert",
-    }
+    } == EVENT_TYPES
 
 
 def test_new_event_defaults():
