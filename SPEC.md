@@ -57,9 +57,33 @@ def verify(path) -> VerifyResult   # checks seq continuity, prev_hash links, has
 ## Signing (signing.py)
 ```python
 def generate_keypair(dir_path) -> tuple[str,str]      # writes aileron_ed25519.key/.pub (PEM), returns paths
-def sign_checkpoint(log_path, key_path) -> dict       # {ts, log_path, count, tip_hash, signature(b64), pubkey_path}; appends JSON line to <log_path>.checkpoints.jsonl
-def verify_checkpoint(log_path, key_path) -> bool     # PREFIX semantics: chain intact, log count >= checkpoint count, event[count-1].hash == tip_hash, ed25519 signature valid; appends after signing never invalidate, truncation/rewrite of the prefix does. key_path may be pub PEM, private PEM, or a dir (pub preferred)
+def sign_checkpoint(log_path, key_path) -> dict       # appends one JSON line to <log_path>.checkpoints.jsonl and returns it
+def verify_checkpoint(log_path, key_path) -> bool     # PREFIX semantics, see below. key_path may be pub PEM, private PEM, or a dir (pub preferred)
+def check_against_checkpoints(log_path) -> list[str]  # unauthenticated cross-check used by `aileron verify`: counts and tip hashes only
+def checkpoint_payload(checkpoint) -> bytes           # the exact bytes the signature covers
+def checkpoint_hash(checkpoint) -> str                # sha256 hex of checkpoint_payload(); the next checkpoint's prev_checkpoint_hash
+def read_checkpoints(log_path) -> list[dict]          # file order, junk lines skipped, nothing verified
+def load_public_key(key_path) -> Ed25519PublicKey     # pub PEM, private PEM (public half derived), or a directory
 ```
+A checkpoint line is canonical JSON of
+`{ts, log_path, index, prev_checkpoint_hash, count, tip_hash, signature, pubkey_path}`:
+- `ts`: RFC3339 UTC with milliseconds and a `Z` suffix.
+- `log_path`: the journal path as given to `sign_checkpoint`, usually absolute. **It is signed**, so it
+  cannot be changed after the fact, and it is disclosed to anyone the checkpoint is shared with.
+- `index`: 1-based position in the checkpoint file. `prev_checkpoint_hash`: `checkpoint_hash()` of the
+  previous checkpoint, or the genesis value `'0'*64` for the first. Together these chain checkpoints to
+  each other so deleting, duplicating, or reordering one inside the sequence is detected.
+- `count`: number of events covered. `tip_hash`: `hash` of event `count-1`.
+- `signature`: base64 Ed25519 (pure, not Ed25519ph) over `checkpoint_payload(checkpoint)`, which is the
+  canonical JSON of every field above except `signature` and `pubkey_path`.
+- `pubkey_path`: where the public key was written at signing time. Informational, not signed.
+
+Signing an empty journal is refused. Verification has PREFIX semantics: the chain must be intact, the
+journal must hold at least `count` events, event `count-1` must have `tip_hash`, every signature must
+verify, and indexes must run 1..n with each `prev_checkpoint_hash` matching. Appending after signing
+never invalidates a checkpoint; truncating or rewriting the signed prefix does. Deleting the newest
+checkpoints is not detectable locally (see SECURITY.md); anchoring them outside the host, as the
+companion package `aileron-anchor` does with Sigstore Rekor, is what closes that gap.
 
 ## Policy rules (policy.py)
 Rule YAML (Sigma-like):

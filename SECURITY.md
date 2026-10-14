@@ -60,7 +60,9 @@ a reportable vulnerability.
   truncating the log or rewriting it forward from the last checkpoint.
   Signed checkpoints bound this: forging forward past a checkpoint requires
   the Ed25519 private key. **Keep signing keys off the recorded host.**
-  External anchoring (Sigstore/Rekor) is on the roadmap for non-repudiation.
+  External anchoring of checkpoints in Sigstore Rekor is provided by the
+  companion package `aileron-anchor`, kept in a separate repository so this
+  package continues to make no network calls.
 - **Tail truncation, including of the checkpoint file.** Checkpoints are
   chained to each other (each carries a signed `index` and
   `prev_checkpoint_hash`), so deleting, duplicating, or reordering a
@@ -78,6 +80,13 @@ a reportable vulnerability.
   truncation; it is not the cryptographic guarantee. Use
   `aileron verify-checkpoint` with a public key you obtained out of band for
   that.
+- **A checkpoint discloses the journal's path.** The signed payload includes
+  `log_path` as it was passed to `sign-checkpoint`, usually an absolute
+  filesystem path. Sharing a checkpoint, and especially anchoring it in a
+  public transparency log, publishes that path permanently. Sign from a
+  relative path or a neutral directory if the path itself is sensitive.
+  Changing what is signed would invalidate every existing checkpoint, so
+  this is documented rather than changed.
 - **A hostile MCP client or server can stop recording, not corrupt it.** The
   proxy fails closed: if the journal cannot be written it stops forwarding
   tool calls rather than letting them run unrecorded. A peer can therefore

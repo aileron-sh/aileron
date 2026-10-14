@@ -32,6 +32,13 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
 ### Added
 
+- Public checkpoint helpers in `aileron.signing`: `checkpoint_payload`,
+  `checkpoint_hash`, `read_checkpoints`, `load_public_key`. External tools
+  that re-verify or anchor checkpoints need exactly these bytes and were
+  importing private names to get them. The underscored names remain as
+  aliases. SPEC.md now lists every signed field, including `index` and
+  `prev_checkpoint_hash`, which it had omitted. SECURITY.md notes that the
+  signed `log_path` is disclosed to anyone a checkpoint is shared with.
 - `aileron --version` prints the package version. A test checks that it agrees
   with `pyproject.toml`, so the two cannot drift apart silently again.
 - `examples/livekit_agent_tracking.py`: a LiveKit Agents voice agent whose

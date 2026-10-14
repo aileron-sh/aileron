@@ -360,9 +360,11 @@ reporting a regression that is not there.
 - **`aileron-rules` community rule repo** - Sigma-for-agents: community
   detection rules mapped to the OWASP Agentic Security Initiative's threat
   taxonomy, CI-validated against recorded incident traces.
-- **Sigstore/Rekor checkpoint anchoring** - publish signed checkpoints to a
-  public transparency log for non-repudiable, third-party-verifiable
-  timestamps.
+- **Sigstore/Rekor checkpoint anchoring** - now a companion package,
+  `aileron-anchor`, kept separate so this package keeps making no network
+  calls. It pushes signed checkpoints to a public transparency log and
+  checks the local journal against what was anchored, which is what makes
+  tail truncation detectable.
 - **OCSF export** - emit Open Cybersecurity Schema Framework events for
   direct SIEM ingestion (Splunk/Elastic quickstarts).
 - **Out of scope for v1: eBPF / kernel-level interception.** Aileron stays
