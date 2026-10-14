@@ -1,0 +1,24 @@
+{
+  "description": "Events 2 and 3 swapped.",
+  "verify": {
+    "ok": false,
+    "count": 6,
+    "first_bad_seq": 3,
+    "errors": [
+      "seq discontinuity at line 2: expected 2, got 3",
+      "prev_hash mismatch at seq 3",
+      "seq discontinuity at line 3: expected 4, got 2",
+      "prev_hash mismatch at seq 2",
+      "seq discontinuity at line 4: expected 3, got 4",
+      "prev_hash mismatch at seq 4"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq 3 in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

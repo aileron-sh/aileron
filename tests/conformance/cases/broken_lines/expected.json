@@ -1,0 +1,24 @@
+{
+  "description": "A non-object line, a blank line, a forged event chained from genesis, invalid JSON, invalid UTF-8, and a truncated trailing line. Nothing after the first unreadable line may verify.",
+  "verify": {
+    "ok": false,
+    "count": 3,
+    "first_bad_seq": 3,
+    "errors": [
+      "line 4: event is not a JSON object",
+      "seq discontinuity at line 5: expected 4, got 1",
+      "seq 1: unverifiable, chain broken at an earlier line",
+      "line 6: invalid JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+      "line 7: invalid UTF-8: 'utf-8' codec can't decode byte 0xff in position 6: invalid start byte",
+      "line 8: invalid JSON: Unterminated string starting at: line 1 column 12 (char 11)"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq 3 in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

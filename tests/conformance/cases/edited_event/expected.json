@@ -1,0 +1,19 @@
+{
+  "description": "Event 4's status rewritten from blocked to ok without re-hashing.",
+  "verify": {
+    "ok": false,
+    "count": 6,
+    "first_bad_seq": 4,
+    "errors": [
+      "hash mismatch at seq 4 (content tampered)"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq 4 in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

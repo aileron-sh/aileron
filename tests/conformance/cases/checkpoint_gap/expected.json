@@ -1,0 +1,17 @@
+{
+  "description": "Three checkpoints with the middle one deleted. Counts and tips still agree with the journal, so the unauthenticated cross-check passes; the signed index chain does not.",
+  "verify": {
+    "ok": true,
+    "count": 6,
+    "first_bad_seq": null,
+    "errors": [],
+    "exit_code": 0,
+    "verdict": "OK: 6 events verified in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

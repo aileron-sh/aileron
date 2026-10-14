@@ -1,0 +1,17 @@
+{
+  "description": "Events appended after the only checkpoint. Prefix semantics: still valid.",
+  "verify": {
+    "ok": true,
+    "count": 8,
+    "first_bad_seq": null,
+    "errors": [],
+    "exit_code": 0,
+    "verdict": "OK: 8 events verified in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": true,
+    "exit_code": 0,
+    "verdict": "OK: checkpoint valid for journal.jsonl"
+  }
+}

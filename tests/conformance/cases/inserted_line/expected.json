@@ -1,0 +1,20 @@
+{
+  "description": "A forged event that chains correctly from event 2 is inserted after it. The forgery itself passes; the real event 3 behind it no longer links.",
+  "verify": {
+    "ok": false,
+    "count": 7,
+    "first_bad_seq": 3,
+    "errors": [
+      "seq discontinuity at line 4: expected 4, got 3",
+      "prev_hash mismatch at seq 3"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq 3 in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

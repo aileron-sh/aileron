@@ -31,6 +31,7 @@ scripts
 server.json
 src
 tests
+verifiers
 "
 
 # Never commit these, wherever they appear - gitignore covers them, but a

@@ -202,6 +202,27 @@ sequence; `verify` reports `first_bad_seq` and exits non-zero. The journal
 is local-only and self-contained - verification needs no network and no
 trusted third party.
 
+### Independent verification
+
+You do not have to take Aileron's word for what the journal says. A second
+verifier, written in Go with nothing but the standard library, lives in
+[`verifiers/go/`](verifiers/go/) and reimplements `verify` and
+`verify-checkpoint` from [SPEC.md](SPEC.md#independent-verification) alone:
+
+```console
+$ cd verifiers/go && go build ./cmd/aileron-verify
+$ ./aileron-verify verify demo.chain.jsonl
+OK: 8 events verified in demo.chain.jsonl
+$ ./aileron-verify verify-checkpoint demo.chain.jsonl --key aileron_ed25519.pub
+```
+
+It exists because a tamper-evidence tool whose only verifier was written by
+its author, in one language, asks you to trust the author twice. Two
+implementations that share only the specification are evidence that the
+specification is complete and that neither has a convenient blind spot. The
+fixtures under `tests/conformance/` hold both to the same verdicts and the
+same canonical bytes on every test run.
+
 ## Performance
 
 The proxy adds **well under a millisecond** per `tools/call`. Matching the full
