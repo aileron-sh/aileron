@@ -42,6 +42,27 @@ The suite must stay green. Tests use
 behavior needs a focused test that exercises it; a PR that changes behavior
 without a test will be asked to add one.
 
+## Linting
+
+CI runs [ruff](https://docs.astral.sh/ruff/) on every push and pull request
+and fails on any finding. The rule set, and the reasons behind it, live in
+the `[tool.ruff]` tables in `pyproject.toml`; read the comment block there
+before proposing a change to it. Run the same check locally before pushing:
+
+```console
+$ ruff check .          # what CI runs
+$ ruff check --fix .    # applies the safe automatic fixes only
+```
+
+`pip install -e ".[dev]"` installs the pinned ruff version, which is the one
+CI uses. `ruff format` is not enforced and should not be run over the tree;
+a formatting-only diff hides the change under review.
+
+When a rule fires on code that is written that way on purpose (the
+fail-closed `except Exception` blocks on the proxy path are the usual case),
+suppress that one line with `# noqa: <code>` and a short reason, rather than
+widening the ignore list in `pyproject.toml`.
+
 ## Benchmarking
 
 The proxy sits inline on every tool call, so latency is a correctness-adjacent

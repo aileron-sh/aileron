@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [Unreleased]
+
+### Internal
+
+- Added a ruff configuration (`[tool.ruff]` in `pyproject.toml`, rule set and
+  reasoning documented inline) and a `lint` job in CI that runs `ruff check .`.
+  The code was brought into compliance with mechanical fixes only; no runtime
+  behaviour changed. `ruff format` is not enforced.
+
 ## [0.1.5] - 2026-08-25
 
 **Performance release.** Matching the bundled rule pack against a large payload
