@@ -17,11 +17,30 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   code and explains why. It also catches up on everything added since 0.1.0:
   `prefilter.py`, `mcpserver.py`, the 32-rule pack, and the current test
   layout, and no longer hardcodes a version number that drifts.
+- **`@track` records `async def` tools correctly.** Voice and video agent
+  frameworks such as LiveKit Agents declare every tool as a coroutine
+  function. Decorating one with `track` used to record the creation of the
+  coroutine object: a digest of its repr as the result, a latency of a few
+  microseconds, and `status=ok` even when the awaited call later failed. A
+  coroutine function now gets a coroutine wrapper. The policy decision runs
+  when the call is awaited and `PolicyBlocked` is raised before the body
+  starts; the event is appended when the await finishes, so latency covers
+  the real call and an exception inside it is recorded as `status=error`.
+  The wrapper still passes `inspect.iscoroutinefunction` and exposes the
+  original signature, so frameworks that build tool schemas from the
+  function see what they expect. The sync path is unchanged.
 
 ### Added
 
 - `aileron --version` prints the package version. A test checks that it agrees
   with `pyproject.toml`, so the two cannot drift apart silently again.
+- `examples/livekit_agent_tracking.py`: a LiveKit Agents voice agent whose
+  tools are wrapped with `track` and whose session runs inside
+  `track_agent(..., framework="livekit")`. A blocked tool call is turned into
+  a reply the LLM can read instead of crashing the session. LiveKit is the
+  framework being recorded; Aileron gains no dependency on it and the
+  example runs with the standard library when LiveKit is not installed.
+  `tests/test_examples.py` exercises the helpers with a fake async tool.
 
 ## [0.1.5] - 2026-08-25
 

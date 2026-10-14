@@ -311,7 +311,14 @@ reporting a regression that is not there.
   stack as the evidence layer, not instead of it.
 - **LangChain / CrewAI / any Python framework** - `@track` is a plain
   decorator; `track_agent` accepts a free-form `framework=` label. No
-  framework dependency is required.
+  framework dependency is required. See `examples/langchain_tool_tracking.py`.
+- **LiveKit Agents (voice and video)** - `@track` wraps `async def` tools
+  too, so a LiveKit `@function_tool` can be recorded and policed before it
+  runs, and the whole `AgentSession` sits inside `track_agent(...,
+  framework="livekit")`. LiveKit is the framework being recorded, not a
+  transport: Aileron makes no network calls and gains no dependency on it.
+  See `examples/livekit_agent_tracking.py`, which runs with the standard
+  library alone when LiveKit is not installed.
 - **MCP** - the proxy wraps any stdio MCP server regardless of which client
   or framework drives it.
 - **Community rules** - rule contributions are the intended contribution
