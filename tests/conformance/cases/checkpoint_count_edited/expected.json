@@ -1,0 +1,17 @@
+{
+  "description": "The checkpoint's count retyped from 6 to 6.0. The cross-check reports it as unusable rather than skipping it, and the signature no longer verifies.",
+  "verify": {
+    "ok": true,
+    "count": 6,
+    "first_bad_seq": null,
+    "errors": [],
+    "exit_code": 2,
+    "verdict": "TAMPERED: chain is internally valid but contradicts journal.jsonl.checkpoints.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

@@ -55,6 +55,44 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   reasoning documented inline) and a `lint` job in CI that runs `ruff check .`.
   The code was brought into compliance with mechanical fixes only; no runtime
   behaviour changed. `ruff format` is not enforced.
+- **An independent verifier in Go, under `verifiers/go/`.** A tamper-evidence
+  tool whose only verifier is written by its author, in one language, is asking
+  for faith. `aileron-verify verify` and `aileron-verify verify-checkpoint`
+  reimplement the two verification commands from SPEC.md using only the Go
+  standard library: no third party code, no network, nothing shared with the
+  Python implementation beyond the specification. Exit codes and verdict lines
+  match the Python CLI, including the unauthenticated cross-check of an
+  adjacent checkpoints file.
+
+  The hard part is canonical JSON, because every hash depends on every byte of
+  it. The Go side does not use `encoding/json` for output. It parses with its
+  own reader so that `5.0` stays a float, lone surrogate escapes survive, and
+  integers keep arbitrary precision, then writes Python's `json.dumps` output
+  byte for byte: keys sorted by code point, every non-ASCII character escaped
+  as lowercase hex with UTF-16 surrogate pairs above U+FFFF, no escaping of
+  `<`, `>`, `&` or `/`, and floats printed as Python's `repr` prints them, with
+  the switch to exponent notation at exactly the same boundaries. Checked
+  against three million random doubles during development and against the
+  committed cases on every test run.
+
+- **A conformance suite that pins the two implementations together.**
+  `scripts/gen_conformance.py` uses the real library to build the fixtures
+  under `tests/conformance/`: intact, edited, deleted, reordered and inserted
+  events; content capture; non-ASCII text, emoji, control characters and
+  unicode keys; floats at the formatting boundaries, big integers and `-0.0`;
+  signed checkpoints with the public key, plus truncation and prefix rewrites
+  that the checkpoint catches; and a file of canonical JSON cases. Each case
+  carries what the Python implementation says about it. Go tests replay every
+  fixture; `tests/test_conformance.py` does the same in Python and, when a Go
+  toolchain is on PATH, builds the Go binary and checks it agrees on every
+  verdict and every byte. A new CI workflow runs the Go side.
+
+- **A new SPEC.md section, "Independent verification",** that states the
+  canonicalization rules, what is hashed, what is signed, and the prefix
+  semantics precisely enough for a third implementation to be written from it.
+  Writing the second implementation also found two places where SPEC.md
+  described the code wrongly (`ensure_ascii` and the signed checkpoint fields);
+  both now match the code.
 
 ## [0.1.5] - 2026-08-25
 

@@ -1,0 +1,8 @@
+{"agent":{"framework":"fixture","name":"conformance-agent","version":null},"hash":"7d548af95c6b39d58c2951b812766723da741f69c5050bbae7eafc21ee367874","id":"ab11e51c63e04a855620dbfe4069ea7e","latency_ms":null,"meta":{},"policy":null,"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","result":null,"result_digest":null,"seq":1,"session_id":"conformance-session","status":"ok","tool":null,"ts":"2026-01-01T00:00:01.000Z","type":"agent_start"}
+{"agent":{"framework":"fixture","name":"conformance-agent","version":null},"hash":"e066f7983d3cbb748589fda2d3248eb756e3f42020d8bf06dbd74d4dea758f6b","id":"96bccdfc5176d914ff750271bee4d515","latency_ms":8.0,"meta":{},"policy":null,"prev_hash":"7d548af95c6b39d58c2951b812766723da741f69c5050bbae7eafc21ee367874","result":null,"result_digest":"6570448599a5c83a7ed2867bb4a39c995343d1fa2d9513b2e8f75e482b1ff716","seq":2,"session_id":"conformance-session","status":"ok","tool":{"arguments":null,"arguments_digest":"3516df63c022bf5a500bc448686321d2261e9dd4b5b1fdd786e24af263066641","name":"read_file"},"ts":"2026-01-01T00:00:02.000Z","type":"tool_call"}
+   
+42
+{"agent":{"framework":"fixture","name":"conformance-agent","version":null},"hash":"9671ff5b8889005b644d47ace55ce9295a208e1a1c0b7bac81f3d25b0fd6c11b","id":"3e46abe97c329c834a2371cfdb8065b3","latency_ms":null,"meta":{},"policy":null,"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","result":null,"result_digest":null,"seq":1,"session_id":"conformance-session","status":"ok","tool":{"arguments":null,"arguments_digest":null,"name":"forged_from_genesis"},"ts":"2026-01-01T00:00:07.000Z","type":"tool_call"}
+{not json
+{"x":"ÿþ"}
+{"seq": 9, "partial

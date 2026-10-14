@@ -28,6 +28,7 @@ Canonical JSON: `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_a
 `\uXXXX` escapes rather than raising at hash time; `allow_nan=False` rejects NaN/Infinity, which are
 not valid JSON. `events.canonical_json()` is the only implementation of this; every hash and
 signature depends on its exact byte output, so changing it invalidates existing journals.
+See "Independent verification" below for the byte-level rules a second implementation must follow.
 ```python
 EVENT_TYPES = {"tool_call","llm_call","agent_start","agent_end","policy_decision","alert"}
 def new_event(type, session_id, agent_name, framework, **fields) -> dict
@@ -219,6 +220,214 @@ aileron demo                           # scripted fake-agent session (digest-onl
                                        # alerts) -> demo.chain.jsonl + demo-report.html
 ```
 All commands exit non-zero with clear stderr on failure; `verify` exits 2 on tamper.
+
+## Independent verification
+
+A tamper-evidence tool whose only verifier is written by its author is asking
+for faith. This section states the rules precisely enough that a verifier can
+be written from it without reading the Python code. One such verifier exists in
+`verifiers/go/` (Go, standard library only), and `tests/conformance/` holds the
+fixtures that pin it and the Python implementation to the same answers. Where
+this text and `src/aileron` disagree, the code is the truth and this text has a
+bug; please report it.
+
+### Reading a journal
+
+1. The journal is a byte file. Split it on `0x0A`. A final line without a
+   trailing newline is still a line.
+2. Decode each line as UTF-8, strictly: overlong forms, encoded surrogates and
+   truncated sequences are invalid. An undecodable line is a problem (`line N:
+   invalid UTF-8`). It occupies one sequence position, and nothing after it may
+   chain: every following event gets `seq S: unverifiable, chain broken at an
+   earlier line` in addition to its own checks, until the chain is resumed from
+   the stored hash of the next readable event.
+3. Strip the decoded line as Python's `str.strip()` strips: remove leading and
+   trailing code points from the set U+0009..U+000D, U+001C..U+0020, U+0085,
+   U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+   A line that is empty after stripping is skipped and consumes no sequence
+   number.
+4. Parse the stripped text as one JSON document (RFC 8259) with these
+   deviations, which are Python's `json.loads` defaults: the literals `NaN`,
+   `Infinity` and `-Infinity` are accepted on input; a float literal whose
+   magnitude overflows binary64 reads as an infinity; raw control characters
+   (below U+0020) inside strings are rejected; a duplicated key keeps the last
+   value; an integer literal with more than 4300 digits is rejected. A line
+   that fails to parse is a problem (`line N: invalid JSON`) and breaks the
+   chain as in step 2. A document that is not an object is a problem (`line N:
+   event is not a JSON object`) and also breaks the chain.
+5. Every line that parses as an object counts towards `count`, whether or not
+   it passes the checks below.
+
+### Canonical JSON
+
+Canonical JSON is the only byte string that is ever hashed or signed. It is
+what `json.dumps(obj, sort_keys=True, separators=(",", ":"),
+ensure_ascii=True, allow_nan=False)` produces, which means exactly this:
+
+- **Objects** are `{` members `}` with members joined by `,` and each member
+  written as the canonical string of the key, `:`, the canonical value. No
+  whitespace anywhere. Members are sorted by key, comparing keys as sequences
+  of code points (which is the same order as comparing their UTF-8 bytes,
+  surrogates included). An empty object is `{}`.
+- **Arrays** are `[` values joined by `,` `]`. An empty array is `[]`.
+- **Strings** are written between double quotes. Code points U+0020..U+007E
+  other than `"` and `\` are written as themselves. These seven have short
+  escapes: `\"` `\\` `\n` `\r` `\t` `\b` `\f`. Every other code point,
+  including the remaining C0 controls, DEL (U+007F) and everything above
+  U+007E, is written as `\u` followed by four lowercase hex digits. Code
+  points above U+FFFF are written as their UTF-16 surrogate pair, two
+  `\uXXXX` escapes. A lone surrogate (which a Python `str` can hold and which
+  reaches the journal through the `\uD800`-style escape in peer-supplied
+  JSON) is written as its own `\uXXXX` escape. The solidus `/` is not
+  escaped. `<`, `>` and `&` are not escaped. Output is therefore pure ASCII.
+- **Integers**: a number literal with no fraction and no exponent is an
+  integer of arbitrary precision. It is written as its decimal digits with a
+  leading `-` if negative. The only literal that changes is `-0`, which is the
+  integer zero and is written `0`. `1e0` is not an integer.
+- **Floats**: a number literal with a fraction or an exponent is a float: the
+  IEEE 754 binary64 value nearest to the literal. It is written as Python's
+  `repr(float)` writes it. Take the shortest decimal digit string that reads
+  back to the same double, and let `exp` be the decimal exponent of its first
+  digit (the value is `d.ddd × 10^exp`). If `exp < -4` or `exp >= 16`, write
+  exponent notation: the digits with a point after the first only when there
+  is more than one, then `e`, a sign, and at least two exponent digits
+  (`1e-05`, `1e+16`, `1.5e+300`, `5e-324`). Otherwise write positional
+  notation with at least one digit after the point (`0.0001`, `5.0`,
+  `1000000000000000.0`, `0.30000000000000004`). Zero is `0.0` or `-0.0`.
+  A float in the source stays a float: `5.0` is written `5.0`, never `5`.
+  `NaN`, `Infinity` and `-Infinity` have no canonical form; an event
+  containing one is a problem (`line N: uncanonicalizable content`) and its
+  hash cannot be recomputed, so it also fails the hash check.
+- **Literals**: `true`, `false`, `null`.
+
+### What is hashed
+
+- `GENESIS = "0" * 64`. The first event has `seq` 1 and `prev_hash` GENESIS.
+- `hash(event) = sha256(canonical(event without the "hash" member))` as 64
+  lowercase hex digits. Every other member, including `prev_hash` and `seq`,
+  is covered.
+- `digest(x) = sha256(canonical(x))` as lowercase hex; used for
+  `tool.arguments_digest` and `result_digest`. Verification does not recompute
+  digests, since the content they summarise may not be present.
+
+For each event line, in order, a verifier records these problems:
+
+1. `line N: non-canonical encoding` when `canonical(event)` is not
+   byte-identical to the stripped line. The stored bytes are authoritative;
+   this is what catches a duplicated key or a `1e0` where a `1` was hashed.
+2. `seq discontinuity at line N: expected E, got S` when `seq` is not equal to
+   the expected value. The expected value starts at 1 and, after each event,
+   becomes that event's `seq` plus one when `seq` is an integer, otherwise the
+   previous expected value plus one. Equality is Python's: numeric across
+   types, so `1.0 == 1` and `true == 1`. A conforming writer only ever writes
+   integers; a conforming verifier accepts what the reference accepts.
+3. `prev_hash mismatch at seq S` when `prev_hash` is not equal to the stored
+   `hash` of the previous readable event (GENESIS for the first).
+4. `hash mismatch at seq S (content tampered)` when `hash` is not equal to the
+   recomputed hash, or the hash could not be recomputed.
+
+`first_bad_seq` is the `seq` of the first event with a problem when that `seq`
+is an integer, otherwise it stays unset until a later problem has one; for an
+unreadable line it is the sequence number that line should have carried. The
+chain is `ok` when no problem was recorded. A missing journal is not `ok`,
+with `count` 0. An empty journal is `ok` with `count` 0.
+
+### What is signed
+
+A checkpoint is one JSON object line in `<log>.checkpoints.jsonl`:
+
+```
+{ts, log_path, index, prev_checkpoint_hash, count, tip_hash, signature, pubkey_path}
+```
+
+- `signed_payload = canonical(checkpoint without "signature" and "pubkey_path")`.
+- `signature` is the Ed25519 signature (RFC 8032) over `signed_payload`,
+  encoded with standard base64. The reference decodes it with Python's
+  non-validating `base64.b64decode`, which discards characters outside the
+  alphabet and stops at the first complete padding; a verifier must accept at
+  least every correctly padded standard encoding.
+- `checkpoint_hash = sha256(signed_payload)` as lowercase hex. The first
+  checkpoint has `index` 1 and `prev_checkpoint_hash` GENESIS; each later one
+  names the `checkpoint_hash` of its predecessor.
+- `count` is the number of events covered and `tip_hash` the `hash` of event
+  number `count`. `log_path` and `pubkey_path` are recorded for the operator
+  and are not checked.
+- The key is an Ed25519 public key in PEM SubjectPublicKeyInfo form. A
+  verifier may also accept a PEM PKCS#8 private key (using its public half) or
+  a directory containing `aileron_ed25519.pub` or `aileron_ed25519.key`, as
+  the reference does.
+
+`verify-checkpoint` reports valid exactly when all of the following hold:
+
+1. The checkpoints file exists and holds at least one object line. It is read
+   as text, so `\n`, `\r\n` and `\r` all end a line; lines that are blank,
+   not JSON or not objects are skipped. (Invalid UTF-8 anywhere in this file
+   is an operational error, exit 1, not a verdict.)
+2. A checkpoint is *usable* when its `count` is a JSON integer greater than
+   zero (not a float, not a bool) and its `signature` decodes and verifies
+   over `signed_payload` with the given key. Unusable checkpoints are ignored.
+   At least one must be usable.
+3. The usable checkpoints, sorted by `index` (anything that is not an integer
+   sorts first), have `index` equal to 1, 2, ..., N in turn, and each
+   `prev_checkpoint_hash` equals the `checkpoint_hash` of the one before it
+   (GENESIS for the first). This is what makes deleting or duplicating a
+   checkpoint detectable.
+4. The journal verifies as above.
+5. For every usable checkpoint, the journal holds at least `count` events and
+   event number `count` has `hash` equal to `tip_hash`.
+
+This is prefix semantics: events appended after a checkpoint was signed leave
+it valid; truncating below `count` or rewriting anything at or before it does
+not. Deleting the newest checkpoint lines is not detectable by any local
+check; see SECURITY.md.
+
+### The unauthenticated cross-check in `verify`
+
+When the chain verifies and `<log>.checkpoints.jsonl` exists, `verify` also
+compares the journal with every checkpoint in file order, without checking
+signatures (no key is needed to run `verify`). For each checkpoint: a `count`
+that is not a positive JSON integer, or a `tip_hash` that is not a string, is
+reported as unusable rather than skipped; otherwise fewer than `count` events
+is reported as truncation, and a mismatched hash at event `count` as a
+rewrite. Any report makes the verdict TAMPERED with exit 2. The reference
+prints a note that signatures were not checked. `--skip-checkpoint-check`
+disables this for a deliberately rotated journal.
+
+### Exit codes and verdict lines
+
+```
+verify             0  OK: <count> events verified in <log>
+                   2  TAMPERED at seq <first_bad_seq or None> in <log>
+                   2  TAMPERED: chain is internally valid but contradicts <log>.checkpoints.jsonl
+                   1  error: <operational problem>
+verify-checkpoint  0  OK: checkpoint valid for <log>
+                   1  FAILED: checkpoint invalid for <log>
+                   1  error: <operational problem, including no key found>
+```
+
+Each problem found is printed first as its own `error: <message>` line on
+stderr. The message texts above are normative where they are quoted in full;
+the exception text that follows `invalid JSON:`, `invalid UTF-8:` and
+`uncanonicalizable content:` comes from the runtime and is informational.
+
+### Conformance suite
+
+`scripts/gen_conformance.py` builds `tests/conformance/` with the real library:
+`canonical_cases.json` (source text, expected canonical bytes, and inputs that
+must be refused) and one directory per journal case holding the journal, any
+checkpoints, the public key and `expected.json` with the Python verdict. The
+output is deterministic so the committed fixtures can be checked against the
+current library. `tests/test_conformance.py` replays everything through Python
+and, when `go` is on PATH, through the Go binary; `verifiers/go` has its own
+tests that do the same from the Go side, run by
+`.github/workflows/go-verifier.yml`.
+
+Two limits of the reference are deliberately not pinned. CPython's recursion
+limit for nested JSON depends on the interpreter version, so the depth at which
+a hostile line stops parsing varies; the Go verifier refuses more than 10000
+levels. And Python versions word some parse errors differently, which is why
+only the verdict, exit code, `first_bad_seq` and the fixed message prefixes are
+compared.
 
 ## Module ownership (branches)
 - core: events.py chainlog.py signing.py + tests (test_events/test_chainlog/test_signing)

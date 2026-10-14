@@ -1,0 +1,73 @@
+name: Go verifier
+
+# Builds and tests the independent Go verifier in verifiers/go.
+#
+# The Go verifier exists so that a journal can be checked by code the Python
+# implementation's author did not write, in a language the recorder is not
+# written in. That only means something if the two keep agreeing, so this runs
+# the Go tests, which replay every fixture under tests/conformance against the
+# Go implementation and compare canonical bytes one case at a time. The Python
+# side of the same comparison runs in the main test workflow.
+#
+# Triggered only by changes that can affect the comparison: the Go code, the
+# fixtures, or the script that generates them.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "verifiers/go/**"
+      - "tests/conformance/**"
+      - "scripts/gen_conformance.py"
+      - ".github/workflows/go-verifier.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "verifiers/go/**"
+      - "tests/conformance/**"
+      - "scripts/gen_conformance.py"
+      - ".github/workflows/go-verifier.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go vet and go test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: verifiers/go
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # Not a pinned version, on purpose. setup-go v6 started forcing
+          # GOTOOLCHAIN=local, which stops Go from fetching a newer toolchain
+          # on demand, and a pinned version stops building the moment the
+          # module's go directive moves past it. The verifier uses only the
+          # standard library and go.mod asks for 1.22, so any current stable
+          # release builds it; tracking stable is both simpler and less likely
+          # to break.
+          go-version: stable
+          # No go.sum exists because there are no dependencies to record.
+          cache: false
+
+      - name: Check formatting
+        run: |
+          set -eu
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        # GOPROXY=off makes "no dependencies" a checked claim: anything that
+        # tried to fetch a module would fail here instead of quietly working.
+        run: GOPROXY=off go vet ./...
+
+      - name: Test
+        run: GOPROXY=off go test ./...

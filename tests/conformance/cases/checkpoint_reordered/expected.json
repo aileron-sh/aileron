@@ -1,0 +1,17 @@
+{
+  "description": "Two checkpoints with their lines swapped. File order is not meaningful; the signed index is.",
+  "verify": {
+    "ok": true,
+    "count": 7,
+    "first_bad_seq": null,
+    "errors": [],
+    "exit_code": 0,
+    "verdict": "OK: 7 events verified in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": true,
+    "exit_code": 0,
+    "verdict": "OK: checkpoint valid for journal.jsonl"
+  }
+}

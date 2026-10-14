@@ -1,0 +1,17 @@
+{
+  "description": "capture_content=True with non-ASCII text, emoji, control characters, lone surrogates, unicode keys, floats at the exponent boundaries, big ints, -0.0, and nested and empty containers.",
+  "verify": {
+    "ok": true,
+    "count": 3,
+    "first_bad_seq": null,
+    "errors": [],
+    "exit_code": 0,
+    "verdict": "OK: 3 events verified in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}
