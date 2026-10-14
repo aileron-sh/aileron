@@ -7,11 +7,13 @@ from behavioral-baseline flags.
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import os
 import time
 import uuid
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
 from aileron import events
@@ -103,6 +105,23 @@ def _alert_event(flags: list, tool_name: str, source: dict,
     )
 
 
+@dataclass
+class _OpenCall:
+    """A tool call that has passed policy and is waiting for its result.
+
+    Shared by the sync and async wrappers so both record the same event the
+    same way; only the point at which the result arrives differs.
+    """
+
+    sink: ChainLog
+    identity: tuple[str, str, str]
+    event: dict
+    started: float
+
+    def elapsed_ms(self) -> float:
+        return (time.perf_counter() - self.started) * 1000.0
+
+
 def track(
     tool_name: str | None = None,
     log: ChainLog | None = None,
@@ -117,21 +136,26 @@ def track(
       and the wrapped function is not executed.
     - ``baseline``: anomaly baseline; ``flag()`` results are emitted as ``alert``
       events, then the event is observed.
+
+    Coroutine functions (``async def``) are wrapped with a coroutine wrapper
+    that records the event when the awaited call finishes, so latency spans
+    the await and an exception raised inside the coroutine is recorded as
+    ``status='error'``. The wrapper is itself a coroutine function, so
+    frameworks that inspect tools (``inspect.iscoroutinefunction``,
+    ``inspect.signature``) see the original. A plain function that merely
+    returns an awaitable is recorded when it returns, as before.
     """
 
     def decorator(fn: F) -> F:
         name = tool_name or fn.__name__
 
-        @functools.wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def begin(args: tuple, kwargs: dict) -> _OpenCall:
+            """Build the event and run policy. Raises PolicyBlocked before fn runs."""
             sink = log if log is not None else default_log()
             identity = _session_identity()
             session_id, agent_name, framework = identity
             arguments = _call_arguments(args, kwargs)
             started = time.perf_counter()
-
-            def elapsed_ms() -> float:
-                return (time.perf_counter() - started) * 1000.0
 
             # Arguments are always attached in memory so policy rules can
             # match on content; ChainLog.append strips them at persist time
@@ -145,6 +169,7 @@ def track(
                 },
                 meta={},
             )
+            call = _OpenCall(sink, identity, ev, started)
 
             if rules:
                 decision = decide(ev, rules)
@@ -152,7 +177,7 @@ def track(
                     rule_id = decision.rule_ids[0]
                     ev["status"] = "blocked"
                     ev["policy"] = {"rule_id": rule_id, "action": "block"}
-                    ev["latency_ms"] = elapsed_ms()
+                    ev["latency_ms"] = call.elapsed_ms()
                     sink.append(ev)
                     raise PolicyBlocked(rule_id)
                 if decision.rule_ids:
@@ -160,31 +185,61 @@ def track(
                         "rule_id": decision.rule_ids[0],
                         "action": decision.action,
                     }
+            return call
 
-            try:
-                result = fn(*args, **kwargs)
-            except Exception as exc:
-                ev["status"] = "error"
-                ev["latency_ms"] = elapsed_ms()
-                ev["meta"] = {
-                    **ev.get("meta", {}),
-                    "error": _error_text(exc, getattr(sink, "capture_content", False)),
-                }
-                sink.append(ev)
-                raise
+        def finish_error(call: _OpenCall, exc: BaseException) -> None:
+            ev = call.event
+            ev["status"] = "error"
+            ev["latency_ms"] = call.elapsed_ms()
+            ev["meta"] = {
+                **ev.get("meta", {}),
+                "error": _error_text(exc, getattr(call.sink, "capture_content", False)),
+            }
+            call.sink.append(ev)
 
+        def finish_ok(call: _OpenCall, result: Any) -> None:
+            ev = call.event
             ev["status"] = "ok"
-            ev["latency_ms"] = elapsed_ms()
+            ev["latency_ms"] = call.elapsed_ms()
             safe_result = _jsonable(result)
             ev["result_digest"] = events.digest(safe_result)
             ev["result"] = safe_result  # stripped at persist time unless capture_content
-            sink.append(ev)
+            call.sink.append(ev)
 
             if baseline is not None:
                 flags = baseline.flag(ev)
                 baseline.observe(ev)
                 if flags:
-                    sink.append(_alert_event(flags, name, ev, identity))
+                    call.sink.append(_alert_event(flags, name, ev, call.identity))
+
+        if inspect.iscoroutinefunction(fn):
+            # A coroutine function gets a coroutine wrapper so the event is
+            # recorded when the awaited call finishes, not when the coroutine
+            # object is created. Latency spans the await, an exception raised
+            # inside the coroutine records status=error, and PolicyBlocked is
+            # raised on await before the body has started.
+            @functools.wraps(fn)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                call = begin(args, kwargs)
+                try:
+                    result = await fn(*args, **kwargs)
+                except Exception as exc:
+                    finish_error(call, exc)
+                    raise
+                finish_ok(call, result)
+                return result
+
+            return async_wrapper  # type: ignore[return-value]
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            call = begin(args, kwargs)
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as exc:
+                finish_error(call, exc)
+                raise
+            finish_ok(call, result)
             return result
 
         return wrapper  # type: ignore[return-value]

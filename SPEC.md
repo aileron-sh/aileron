@@ -103,6 +103,17 @@ def track_agent(name, framework, log) -> AgentSession  # context manager emittin
 ```
 Default global log path: env `AILERON_LOG` or `./aileron.chain.jsonl`.
 
+Coroutine functions: when `inspect.iscoroutinefunction(fn)` is true, `track`
+returns an `async def` wrapper with the same event semantics as the sync path.
+The policy decision and any `PolicyBlocked` happen when the coroutine is
+awaited, before the body starts; the `tool_call` event is appended when the
+awaited call returns or raises, so `latency_ms` spans the await and an
+exception inside the coroutine records `status='error'`. Creating the
+coroutine object without awaiting it records nothing. The wrapper satisfies
+`inspect.iscoroutinefunction` and `functools.wraps` preserves `__wrapped__`,
+so `inspect.signature` reports the original parameters. A plain `def` that
+returns an awaitable is not special-cased: it is recorded when it returns.
+
 ## MCP stdio proxy (proxy.py)
 Speaks JSON-RPC 2.0 over stdin/stdout (newline-delimited and Content-Length framed - support both).
 Spawns child: `argv` after `--`. Logs every `tools/call` request/response as tool_call events
