@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [Unreleased]
+
+### Fixed
+
+- **SPEC.md described the wrong canonical JSON.** It said `ensure_ascii=False`;
+  the code has always used `ensure_ascii=True` with `allow_nan=False`. Anyone
+  writing an independent verifier from the spec would have computed different
+  hashes for any event containing non-ASCII text. The spec now matches the
+  code and explains why. It also catches up on everything added since 0.1.0:
+  `prefilter.py`, `mcpserver.py`, the 32-rule pack, and the current test
+  layout, and no longer hardcodes a version number that drifts.
+
+### Added
+
+- `aileron --version` prints the package version. A test checks that it agrees
+  with `pyproject.toml`, so the two cannot drift apart silently again.
+
 ## [0.1.5] - 2026-08-25
 
 **Performance release.** Matching the bundled rule pack against a large payload

@@ -61,7 +61,7 @@ tests/         one file per module
 ## Working here
 
 ```console
-$ python -m pytest tests/ -q          # must stay green (244+ tests)
+$ python -m pytest tests/ -q          # must stay green (276+ tests)
 $ python scripts/benchmark.py         # proxy overhead; CI fails on >2x median regression
 ```
 

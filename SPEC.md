@@ -11,17 +11,23 @@ export, and HTML incident-replay reports. Pure Python >=3.10. Runtime deps: `pyy
 aileron/
   SPEC.md
   pyproject.toml
-  src/aileron/__init__.py  events.py  chainlog.py  signing.py  policy.py
-                 detect.py  sdk.py  proxy.py  otel.py  report.py  cli.py  py.typed
-  src/aileron/rules/examples/destructive-shell.yml  secrets-exfil.yml  rate-spike-note.md
-  tests/test_events.py test_chainlog.py test_signing.py test_policy.py
-        test_detect.py test_sdk.py test_proxy.py test_otel.py test_report.py test_cli.py
+  src/aileron/__init__.py  events.py  chainlog.py  signing.py  policy.py  prefilter.py
+                 detect.py  sdk.py  proxy.py  mcpserver.py  otel.py  report.py  cli.py  py.typed
+  src/aileron/rules/examples/*.yml       # bundled rule pack (32 rules) + rate-spike-note.md
+  tests/                                 # one test file per module, plus test_rule_pack.py,
+                                         # test_metrics.py, test_real_mcp_server.py (opt-in, live)
 ```
 `pyproject.toml`: PEP 621, setuptools, `[project.scripts] aileron = "aileron.cli:main"`,
-name `aileron`, version `0.1.0`, license Apache-2.0, requires-python >=3.10.
+name `aileron`, license Apache-2.0, requires-python >=3.10. The version lives in
+`pyproject.toml` and `src/aileron/__init__.py` (`__version__`); the two must agree, and
+`aileron --version` prints it.
 
 ## Event schema (events.py)
-Canonical JSON: `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+Canonical JSON: `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)`.
+`ensure_ascii=True` keeps the hash input pure ASCII, so non-ASCII text and lone surrogates become
+`\uXXXX` escapes rather than raising at hash time; `allow_nan=False` rejects NaN/Infinity, which are
+not valid JSON. `events.canonical_json()` is the only implementation of this; every hash and
+signature depends on its exact byte output, so changing it invalidates existing journals.
 ```python
 EVENT_TYPES = {"tool_call","llm_call","agent_start","agent_end","policy_decision","alert"}
 def new_event(type, session_id, agent_name, framework, **fields) -> dict
@@ -82,6 +88,20 @@ in-memory event before decide(), regardless of capture_content - content
 matchers must fire in digest-only mode. ChainLog.append strips content from
 the persisted copy. capture_content controls persistence, never enforcement.
 
+## Regex prefilter (prefilter.py)
+Speed only, never a detection. Before running a `<key>_regex` pattern the engine asks whether the
+payload can possibly match: each pattern is parsed once into a conjunction of literal sets such
+that any matching string must contain one literal from every set. Case folding uses `fold()`,
+which agrees with `re.IGNORECASE` over the whole Unicode range (`str.lower()` and
+`str.casefold()` do not). Anything the extractor does not fully understand returns `None`,
+meaning "run the regex". `AILERON_NO_PREFILTER=1` disables it.
+```python
+def fold(text) -> str
+def requirement(pattern) -> tuple | None          # conjunction of frozenset literals, or None
+def required_literals(pattern) -> frozenset | None
+def can_skip(pattern, folded_haystack, seen=None) -> bool   # True only when a match is impossible
+```
+
 ## Anomaly detection (detect.py)
 ```python
 class Baseline:
@@ -115,6 +135,17 @@ with status='error' and meta.error noting the missing response (crash-safe recor
 def run_proxy(child_argv: list[str], log: ChainLog, rules: list[Rule]|None) -> int  # exit code of child
 ```
 
+## Journal MCP server (mcpserver.py)
+`aileron serve --root DIR` exposes journals read-only over MCP stdio (protocol `2024-11-05`).
+Three tools: `verify_journal(journal)`, `query_events(journal, tool?, status?, since?, until?,
+limit?)`, `explain_rule(rule_id)`. No write, delete, rotate, or sign tool, ever. Every journal
+name is resolved and must sit inside `--root`; only `.jsonl` opens; signing keys are never read;
+every reply carries the journal's integrity status; errors never echo file contents. Responses
+are capped (`MAX_RESULTS=200`, `MAX_FIELD_CHARS=200`, `MAX_RESPONSE_BYTES=64 KiB`).
+```python
+def serve(root: str, stdin=None, stdout=None) -> int
+```
+
 ## OTel export (otel.py)
 ```python
 def to_otel_spans(events: list[dict]) -> list[dict]   # one dict per event:
@@ -138,6 +169,7 @@ warm palette, inline CSS only, no external assets, no JS frameworks (vanilla fil
 
 ## CLI (cli.py, argparse)
 ```
+aileron --version                      # prints 'aileron <version>'
 aileron init [--dir .]                 # keypair + ./aileron.chain.jsonl + ./rules dir
 aileron verify <log>
 aileron sign-checkpoint <log> [--key path]
@@ -156,8 +188,8 @@ All commands exit non-zero with clear stderr on failure; `verify` exits 2 on tam
 ## Module ownership (branches)
 - core: events.py chainlog.py signing.py + tests (test_events/test_chainlog/test_signing)
 - intercept: sdk.py proxy.py + tests (test_sdk/test_proxy)
-- policy: policy.py detect.py src/aileron/rules/examples/* + tests (test_policy/test_detect)
-- surface: pyproject.toml cli.py otel.py report.py + tests (test_cli/test_otel/test_report) + __init__.py
+- policy: policy.py prefilter.py detect.py src/aileron/rules/examples/* + tests (test_policy/test_prefilter/test_detect/test_rule_pack)
+- surface: pyproject.toml cli.py mcpserver.py otel.py report.py + tests (test_cli/test_mcpserver/test_otel/test_report) + __init__.py
 
 All modules import across each other ONLY via the signatures above. No other cross-module
 internals. Every module has `from __future__ import annotations`. Code style: type hints,

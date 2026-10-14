@@ -6,8 +6,11 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from aileron import __version__  # noqa: E402
 from aileron.chainlog import ChainLog  # noqa: E402
 from aileron.cli import main  # noqa: E402
 from aileron.events import new_event  # noqa: E402
@@ -268,3 +271,17 @@ def test_verify_detects_rewrite_inside_checkpointed_prefix(tmp_path, capsys):
         log.append(new_event("tool_call", "s", "bot", "demo", tool={"name": f"forged{i}"}))
     assert main(["verify", log_path]) == 2
     assert "appears rewritten" in capsys.readouterr().err
+
+
+def test_version_flag_prints_package_version(capsys):
+    """``aileron --version`` must report the same version the package exports."""
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"aileron {__version__}"
+
+
+def test_version_matches_pyproject():
+    """The two places the version is written must agree, or releases drift."""
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'version = "{__version__}"' in text
