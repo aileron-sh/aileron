@@ -284,7 +284,7 @@ def test_track_async_error_status(tmp_path):
     ev = list(log)[0]
     assert ev["status"] == "error"
     assert ev["meta"]["error"] == "ValueError"
-    assert "SECRET_VALUE" not in open(log.path, encoding="utf-8").read()
+    assert "SECRET_VALUE" not in Path(log.path).read_text(encoding="utf-8")
 
 
 def test_track_async_latency_spans_the_await(tmp_path):
@@ -332,7 +332,7 @@ def test_track_async_content_rule_fires_in_digest_mode(tmp_path):
     assert blocked["status"] == "blocked"
     assert blocked["tool"]["arguments"] is None
     assert blocked["tool"]["arguments_digest"]
-    assert "rm -rf" not in open(log.path, encoding="utf-8").read()
+    assert "rm -rf" not in Path(log.path).read_text(encoding="utf-8")
     assert verify(log.path).ok
 
 

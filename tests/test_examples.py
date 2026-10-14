@@ -91,7 +91,7 @@ def test_guard_tool_blocked_call_becomes_reply(livekit_example, tmp_path):
     assert ev["status"] == "blocked"
     assert ev["policy"] == {"rule_id": "aileron-001", "action": "block"}
     assert ev["tool"]["arguments"] is None
-    assert "rm -rf" not in open(log.path, encoding="utf-8").read()
+    assert "rm -rf" not in Path(log.path).read_text(encoding="utf-8")
     assert verify(log.path).ok
 
 
@@ -149,7 +149,7 @@ def test_guard_tool_error_is_recorded_and_propagates(livekit_example, tmp_path):
     (ev,) = list(log)
     assert ev["status"] == "error"
     assert ev["meta"]["error"] == "RuntimeError"
-    assert "SECRET" not in open(log.path, encoding="utf-8").read()
+    assert "SECRET" not in Path(log.path).read_text(encoding="utf-8")
 
 
 def test_guard_tool_rejects_sync_functions(livekit_example, tmp_path):
@@ -187,7 +187,7 @@ def test_offline_demo_journal(livekit_example, tmp_path):
     assert [r["status"] for r in recs[1:4]] == ["ok", "ok", "blocked"]
     assert [r["tool"]["name"] for r in recs[1:4]] == ["lookup_weather", "send_email", "shell"]
     assert all(r["latency_ms"] >= 0 for r in recs[1:4])
-    raw = open(path, encoding="utf-8").read()
+    raw = Path(path).read_text(encoding="utf-8")
     assert "rm -rf" not in raw and "ops@example.com" not in raw
     assert verify(path).ok
 

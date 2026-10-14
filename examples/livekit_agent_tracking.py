@@ -44,7 +44,8 @@ import asyncio
 import functools
 import inspect
 import sys
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aileron import ChainLog, PolicyBlocked, bundled_rules_dir, track, track_agent
 from aileron.chainlog import verify
