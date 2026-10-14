@@ -17,6 +17,13 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   code and explains why. It also catches up on everything added since 0.1.0:
   `prefilter.py`, `mcpserver.py`, the 32-rule pack, and the current test
   layout, and no longer hardcodes a version number that drifts.
+- **`verify` rejects a non-integer `seq`.** It compared `seq` with Python's
+  `==`, so a journal with `seq` written as `1.0` or `true`, and otherwise
+  correct hashes, verified as intact. A writer only ever emits integers, so
+  such a file is crafted, and the verdict now says so. Found while writing the
+  independent Go verifier, which had to reproduce the quirk to agree with
+  Python; both implementations now apply the integer rule and two conformance
+  fixtures pin it.
 - **`@track` records `async def` tools correctly.** Voice and video agent
   frameworks such as LiveKit Agents declare every tool as a coroutine
   function. Decorating one with `track` used to record the creation of the

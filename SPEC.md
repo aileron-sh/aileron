@@ -315,19 +315,22 @@ For each event line, in order, a verifier records these problems:
 1. `line N: non-canonical encoding` when `canonical(event)` is not
    byte-identical to the stripped line. The stored bytes are authoritative;
    this is what catches a duplicated key or a `1e0` where a `1` was hashed.
-2. `seq discontinuity at line N: expected E, got S` when `seq` is not equal to
-   the expected value. The expected value starts at 1 and, after each event,
-   becomes that event's `seq` plus one when `seq` is an integer, otherwise the
-   previous expected value plus one. Equality is Python's: numeric across
-   types, so `1.0 == 1` and `true == 1`. A conforming writer only ever writes
-   integers; a conforming verifier accepts what the reference accepts.
+2. `seq discontinuity at line N: expected E, got S` when `seq` is not a JSON
+   integer equal to the expected value. A JSON integer is a number with no
+   fraction and no exponent; `1.0`, `1e0`, `true` and `"1"` are not integers
+   and are reported even where Python's `==` would call them equal to 1. `S`
+   is rendered as Python's `str()` renders the parsed value (`1.0`, `True`,
+   `None`). The expected value starts at 1 and, after each event, becomes
+   that event's `seq` plus one when `seq` is an integer, otherwise the
+   previous expected value plus one.
 3. `prev_hash mismatch at seq S` when `prev_hash` is not equal to the stored
    `hash` of the previous readable event (GENESIS for the first).
 4. `hash mismatch at seq S (content tampered)` when `hash` is not equal to the
    recomputed hash, or the hash could not be recomputed.
 
 `first_bad_seq` is the `seq` of the first event with a problem when that `seq`
-is an integer, otherwise it stays unset until a later problem has one; for an
+is a JSON integer (a boolean is not one), otherwise it stays unset until a
+later problem has one; for an
 unreadable line it is the sequence number that line should have carried. The
 chain is `ok` when no problem was recorded. A missing journal is not `ok`,
 with `count` 0. An empty journal is `ok` with `count` 0.

@@ -442,10 +442,11 @@ def _seq_as_string(ev):
 
 
 @case("seq_as_float",
-      "seq values 1.0, 2.0, 3.0 with correct hashes. Documents reference "
-      "behaviour: Python compares seq numerically (1.0 == 1), so this verifies. "
-      "A second implementation has to make the same comparison or it will "
-      "disagree with the reference on this journal.")
+      "seq values 1.0, 2.0, 3.0 with correct hashes. Python's == would call "
+      "1.0 equal to 1, but seq must be a JSON integer, so every line is a "
+      "discontinuity. The hashes are intact, which is the point: this is "
+      "caught by the type rule, not by the chain. first_bad_seq stays unset "
+      "because no failing event carries an integer seq.")
 def _seq_as_float(ev):
     prev = "0" * 64
     lines = []
@@ -456,7 +457,27 @@ def _seq_as_float(ev):
         prev = e["hash"]
         lines.append(canonical_json(e))
     write_lines(lines)
-    return {"ok": True, "count": 3}
+    return {"ok": False, "first_bad_seq": None, "count": 3}
+
+
+@case("seq_as_bool",
+      "The first event has seq true, the rest 2 and 3, with correct hashes. "
+      "Python treats True as 1 and would otherwise let this through. The "
+      "first line is a discontinuity (expected 1, got True); the expected "
+      "value then advances to 2 as it does after any non-integer seq, so "
+      "lines 2 and 3 are clean. first_bad_seq is None, since a boolean is "
+      "not an integer seq.")
+def _seq_as_bool(ev):
+    prev = "0" * 64
+    lines = []
+    for i in (True, 2, 3):
+        e = ev(tool={"name": "t", "arguments": None}, result=None)
+        e["seq"], e["prev_hash"] = i, prev
+        e["hash"] = event_hash(e)
+        prev = e["hash"]
+        lines.append(canonical_json(e))
+    write_lines(lines)
+    return {"ok": False, "first_bad_seq": None, "count": 3}
 
 
 @case("whitespace_tolerance",

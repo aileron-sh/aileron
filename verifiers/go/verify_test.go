@@ -82,30 +82,30 @@ func TestVerifyMissingFileIsTamperedAtSeqNone(t *testing.T) {
 	}
 }
 
-func TestVerifyBoolSeqFollowsPython(t *testing.T) {
-	// Python's isinstance(True, int) is true and True == 1, so a journal whose
-	// first event carries "seq":true passes the continuity check in the
-	// reference implementation. The Go port must agree, including in how it
-	// reports a later failure's first_bad_seq.
+func TestVerifyBoolSeqIsRejected(t *testing.T) {
+	// Python's isinstance(True, int) holds and True == 1, but the reference
+	// requires type(seq) is int, so "seq":true is a discontinuity even with a
+	// correct hash. A boolean also never supplies first_bad_seq: a later
+	// failure on an integer seq does.
 	line, hash := event(t, 1, GenesisPrevHash, "t")
 	line = strings.Replace(line, `"seq":1,`, `"seq":true,`, 1)
 	v, _ := canonical.Parse(line)
 	hash, _ = EventHash(v)
 	v.Object["hash"] = canonical.NewString(hash)
 	out, _ := canonical.Marshal(v)
-	line2, _ := event(t, 2, hash, "t2")
 	path := filepath.Join(t.TempDir(), "j.jsonl")
-	os.WriteFile(path, []byte(string(out)+"\n"+line2+"\n"), 0o644)
+	os.WriteFile(path, []byte(string(out)+"\n"), 0o644)
 	result := Verify(path)
-	if !result.OK {
-		t.Fatalf("want OK, got %+v", result)
+	want := "seq discontinuity at line 1: expected 1, got True"
+	if result.OK || result.FirstBadSeq != nil || len(result.Errors) != 1 || result.Errors[0] != want {
+		t.Fatalf("unexpected result: %+v", result)
 	}
-	// Now break the first event: first_bad_seq is Python's True, printed as 1
-	// by big.Int (Python prints True; the fixtures never carry this case).
-	broken := strings.Replace(string(out), `"status":"ok"`, `"status":"error"`, 1)
-	os.WriteFile(path, []byte(broken+"\n"+line2+"\n"), 0o644)
+	// Add a second event whose prev_hash names genesis instead of line 1's
+	// hash: its complaint is the first problem carrying an integer seq.
+	line2, _ := event(t, 2, GenesisPrevHash, "t2")
+	os.WriteFile(path, []byte(string(out)+"\n"+line2+"\n"), 0o644)
 	result = Verify(path)
-	if result.OK || result.FirstBadSeq == nil || result.FirstBadSeq.Int64() != 1 {
+	if result.OK || result.FirstBadSeq == nil || result.FirstBadSeq.Int64() != 2 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }

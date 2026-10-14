@@ -180,7 +180,10 @@ def _chain_errors(line: _JournalLine, expected_seq: int,
     seq = event.get("seq")
     problems: list[tuple[Any, str]] = []
 
-    if seq != expected_seq:
+    # ``seq`` must be a JSON integer. Python would call 1.0 and True equal to
+    # 1, but a writer only ever emits integers, so anything else is a crafted
+    # line and the verdict says so instead of quietly agreeing.
+    if type(seq) is not int or seq != expected_seq:
         problems.append((seq, f"seq discontinuity at line {line.lineno}: "
                               f"expected {expected_seq}, got {seq}"))
     if expected_prev is _BROKEN:
@@ -222,7 +225,7 @@ def verify(path: str) -> VerifyResult:
         for seq, message in problems:
             errors.append(message)
             if first_bad_seq is None:
-                first_bad_seq = seq if isinstance(seq, int) else None
+                first_bad_seq = seq if type(seq) is int else None
 
     count = 0
     expected_seq = 1
@@ -244,7 +247,7 @@ def verify(path: str) -> VerifyResult:
 
         event = line.event or {}
         seq = event.get("seq")
-        expected_seq = (seq if isinstance(seq, int) else expected_seq) + 1
+        expected_seq = (seq if type(seq) is int else expected_seq) + 1
         expected_prev = event.get("hash", GENESIS_PREV_HASH)
 
     return VerifyResult(

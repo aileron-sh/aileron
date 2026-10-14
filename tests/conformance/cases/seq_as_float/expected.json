@@ -1,12 +1,16 @@
 {
-  "description": "seq values 1.0, 2.0, 3.0 with correct hashes. Documents reference behaviour: Python compares seq numerically (1.0 == 1), so this verifies. A second implementation has to make the same comparison or it will disagree with the reference on this journal.",
+  "description": "seq values 1.0, 2.0, 3.0 with correct hashes. Python's == would call 1.0 equal to 1, but seq must be a JSON integer, so every line is a discontinuity. The hashes are intact, which is the point: this is caught by the type rule, not by the chain. first_bad_seq stays unset because no failing event carries an integer seq.",
   "verify": {
-    "ok": true,
+    "ok": false,
     "count": 3,
     "first_bad_seq": null,
-    "errors": [],
-    "exit_code": 0,
-    "verdict": "OK: 3 events verified in journal.jsonl"
+    "errors": [
+      "seq discontinuity at line 1: expected 1, got 1.0",
+      "seq discontinuity at line 2: expected 2, got 2.0",
+      "seq discontinuity at line 3: expected 3, got 3.0"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq None in journal.jsonl"
   },
   "checkpoint": {
     "key": "aileron_ed25519.pub",

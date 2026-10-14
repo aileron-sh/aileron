@@ -82,8 +82,10 @@ func verifyReader(r io.Reader) VerifyResult {
 			switch {
 			case p.seq == nil:
 				result.FirstBadSeq = new(big.Int).Set(p.n)
-			case p.seq.IsPyInt():
-				result.FirstBadSeq = p.seq.PyIntValue()
+			case p.seq.Kind == canonical.Int:
+				// A boolean is not an integer seq, even though Python's
+				// isinstance(True, int) holds; the reference uses type() is int.
+				result.FirstBadSeq = p.seq.BigInt()
 			}
 		}
 	}
@@ -137,7 +139,9 @@ func verifyReader(r io.Reader) VerifyResult {
 		result.Count++
 
 		var chain []problem
-		if !seq.EqualsPyInt(expectedSeq) {
+		// seq must be a JSON integer. Python's == would call 1.0 and true
+		// equal to 1; the reference rejects both, so the kind is checked first.
+		if seq.Kind != canonical.Int || !seq.EqualsPyInt(expectedSeq) {
 			chain = append(chain, problem{seq: seq, msg: fmt.Sprintf(
 				"seq discontinuity at line %d: expected %s, got %s", lineno, expectedSeq, canonical.PyStr(seq))})
 		}
@@ -153,8 +157,8 @@ func verifyReader(r io.Reader) VerifyResult {
 		}
 		record(chain)
 
-		if seq.IsPyInt() {
-			expectedSeq = new(big.Int).Add(seq.PyIntValue(), big.NewInt(1))
+		if seq.Kind == canonical.Int {
+			expectedSeq = new(big.Int).Add(seq.BigInt(), big.NewInt(1))
 		} else {
 			expectedSeq = new(big.Int).Add(expectedSeq, big.NewInt(1))
 		}
