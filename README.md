@@ -202,6 +202,27 @@ sequence; `verify` reports `first_bad_seq` and exits non-zero. The journal
 is local-only and self-contained - verification needs no network and no
 trusted third party.
 
+### Independent verification
+
+You do not have to take Aileron's word for what the journal says. A second
+verifier, written in Go with nothing but the standard library, lives in
+[`verifiers/go/`](verifiers/go/) and reimplements `verify` and
+`verify-checkpoint` from [SPEC.md](SPEC.md#independent-verification) alone:
+
+```console
+$ cd verifiers/go && go build ./cmd/aileron-verify
+$ ./aileron-verify verify demo.chain.jsonl
+OK: 8 events verified in demo.chain.jsonl
+$ ./aileron-verify verify-checkpoint demo.chain.jsonl --key aileron_ed25519.pub
+```
+
+It exists because a tamper-evidence tool whose only verifier was written by
+its author, in one language, asks you to trust the author twice. Two
+implementations that share only the specification are evidence that the
+specification is complete and that neither has a convenient blind spot. The
+fixtures under `tests/conformance/` hold both to the same verdicts and the
+same canonical bytes on every test run.
+
 ## Performance
 
 The proxy adds **well under a millisecond** per `tools/call`. Matching the full
@@ -311,7 +332,14 @@ reporting a regression that is not there.
   stack as the evidence layer, not instead of it.
 - **LangChain / CrewAI / any Python framework** - `@track` is a plain
   decorator; `track_agent` accepts a free-form `framework=` label. No
-  framework dependency is required.
+  framework dependency is required. See `examples/langchain_tool_tracking.py`.
+- **LiveKit Agents (voice and video)** - `@track` wraps `async def` tools
+  too, so a LiveKit `@function_tool` can be recorded and policed before it
+  runs, and the whole `AgentSession` sits inside `track_agent(...,
+  framework="livekit")`. LiveKit is the framework being recorded, not a
+  transport: Aileron makes no network calls and gains no dependency on it.
+  See `examples/livekit_agent_tracking.py`, which runs with the standard
+  library alone when LiveKit is not installed.
 - **MCP** - the proxy wraps any stdio MCP server regardless of which client
   or framework drives it.
 - **Community rules** - rule contributions are the intended contribution
@@ -353,9 +381,11 @@ reporting a regression that is not there.
 - **`aileron-rules` community rule repo** - Sigma-for-agents: community
   detection rules mapped to the OWASP Agentic Security Initiative's threat
   taxonomy, CI-validated against recorded incident traces.
-- **Sigstore/Rekor checkpoint anchoring** - publish signed checkpoints to a
-  public transparency log for non-repudiable, third-party-verifiable
-  timestamps.
+- **Sigstore/Rekor checkpoint anchoring** - now a companion package,
+  `aileron-anchor`, kept separate so this package keeps making no network
+  calls. It pushes signed checkpoints to a public transparency log and
+  checks the local journal against what was anchored, which is what makes
+  tail truncation detectable.
 - **OCSF export** - emit Open Cybersecurity Schema Framework events for
   direct SIEM ingestion (Splunk/Elastic quickstarts).
 - **Out of scope for v1: eBPF / kernel-level interception.** Aileron stays

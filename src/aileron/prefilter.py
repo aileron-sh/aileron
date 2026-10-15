@@ -321,7 +321,7 @@ def can_skip(pattern: str, folded_haystack: str, seen: dict | None = None) -> bo
             seen[literal] = hit
         return hit
 
-    for conjunction in found:
+    for conjunction in found:  # noqa: SIM110 - kept as an explicit loop so the soundness argument stays readable
         if all(any(present(lit) for lit in clause) for clause in conjunction):
             return False  # this alternative might match, so run the regex
     return True

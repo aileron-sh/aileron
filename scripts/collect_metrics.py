@@ -93,7 +93,7 @@ def _try(label: str, fn):
     except urllib.error.HTTPError as exc:
         print(f"  ! {label}: HTTP {exc.code}", file=sys.stderr)
         return {"error": f"HTTP {exc.code}"}
-    except Exception as exc:  # noqa: BLE001 - never lose a snapshot to one endpoint
+    except Exception as exc:  # never lose a snapshot to one endpoint
         print(f"  ! {label}: {type(exc).__name__}: {exc}", file=sys.stderr)
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -243,11 +243,11 @@ def summarise() -> int:
         com, py = r.get("community", {}), r.get("pypi", {})
         v = tr.get("views_14d", {}).get("count") if isinstance(tr.get("views_14d"), dict) else None
         cl = tr.get("clones_14d", {}).get("count") if isinstance(tr.get("clones_14d"), dict) else None
-        print(f"{r['date']:<12}{str(_fmt(repo.get('stars'))):>6}"
-              f"{str(_fmt(repo.get('forks'))):>7}{str(_fmt(v)):>9}{str(_fmt(cl)):>10}"
-              f"{str(_fmt(com.get('contributor_count'))):>9}"
-              f"{str(_fmt(com.get('external_issue_count'))):>9}"
-              f"{str(_fmt(py.get('downloads_last_month'))):>9}")
+        print(f"{r['date']:<12}{_fmt(repo.get('stars'))!s:>6}"
+              f"{_fmt(repo.get('forks'))!s:>7}{_fmt(v)!s:>9}{_fmt(cl)!s:>10}"
+              f"{_fmt(com.get('contributor_count'))!s:>9}"
+              f"{_fmt(com.get('external_issue_count'))!s:>9}"
+              f"{_fmt(py.get('downloads_last_month'))!s:>9}")
     return 0
 
 

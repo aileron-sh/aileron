@@ -52,8 +52,9 @@ src/aileron/
   proxy.py     MCP stdio proxy (enforcement)        otel.py      OTel + OTLP export
   report.py    single-file HTML report              cli.py       argparse CLI
   rules/examples/   bundled starter rules (shipped as package data)
-scripts/       benchmark.py, collect_metrics.py
-tests/         one file per module
+scripts/       benchmark.py, collect_metrics.py, gen_conformance.py
+tests/         one file per module; tests/conformance/ holds cross-implementation fixtures
+verifiers/go/  independent Go verifier (stdlib only); must agree with src/aileron on every fixture
 ```
 
 `SPEC.md` is the authoritative description of formats and signatures; keep it in sync.
@@ -61,7 +62,7 @@ tests/         one file per module
 ## Working here
 
 ```console
-$ python -m pytest tests/ -q          # must stay green (244+ tests)
+$ python -m pytest tests/ -q          # must stay green (790+ tests)
 $ python scripts/benchmark.py         # proxy overhead; CI fails on >2x median regression
 ```
 

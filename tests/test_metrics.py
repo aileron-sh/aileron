@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from collect_metrics import MAINTAINERS, _is_bot, _is_external  # noqa: E402
+from collect_metrics import MAINTAINERS, _is_bot, _is_external
 
 
 @pytest.mark.parametrize("account", [

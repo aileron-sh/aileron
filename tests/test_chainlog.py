@@ -51,7 +51,8 @@ def test_content_stripped_by_default_kept_when_opted_in(tmp_path):
     # digests kept
     assert ev["tool"]["arguments_digest"] is not None
     assert ev["result_digest"] is not None
-    on_disk = json.loads(open(path).readline())
+    with open(path) as fh:
+        on_disk = json.loads(fh.readline())
     assert on_disk["tool"]["arguments"] is None
     assert on_disk["result"] is None
 
@@ -88,11 +89,11 @@ def test_tamper_detection_first_bad_seq(tmp_path):
     for i in range(5):
         log.append(make_ev(i))
 
-    lines = open(path, encoding="utf-8").read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     ev = json.loads(lines[2])  # seq 3
     ev["status"] = "blocked"  # tamper content without fixing hash
     lines[2] = json.dumps(ev, sort_keys=True, separators=(",", ":"))
-    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     result = verify(path)
     assert result.ok is False
@@ -106,11 +107,11 @@ def test_tamper_prev_hash_link(tmp_path):
     log = ChainLog(path)
     for i in range(3):
         log.append(make_ev(i))
-    lines = open(path, encoding="utf-8").read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     ev = json.loads(lines[1])
     ev["prev_hash"] = "1" * 64
     lines[1] = json.dumps(ev, sort_keys=True, separators=(",", ":"))
-    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     result = verify(path)
     assert result.ok is False
     assert result.first_bad_seq == 2
@@ -121,9 +122,9 @@ def test_seq_discontinuity_detected(tmp_path):
     log = ChainLog(path)
     for i in range(3):
         log.append(make_ev(i))
-    lines = open(path, encoding="utf-8").read().splitlines()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
     del lines[1]  # drop seq 2
-    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     result = verify(path)
     assert result.ok is False
 
@@ -217,3 +218,41 @@ def test_raw_invalid_utf8_reports_tampered_instead_of_raising(tmp_path):
     result = verify(str(path))
     assert result.ok is False
     assert any("invalid UTF-8" in e for e in result.errors)
+
+
+def _rewrite_seq(path: Path, raw: str) -> None:
+    """Replace seq 1 on line 1 with ``raw`` and recompute that line's hash."""
+    from aileron.events import canonical_json, event_hash
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    ev = json.loads(lines[0].replace('"seq":1,', f'"seq":{raw},'))
+    ev["hash"] = event_hash(ev)
+    lines[0] = canonical_json(ev)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_float_seq_is_rejected_even_with_valid_hashes(tmp_path):
+    """1.0 == 1 in Python, but seq must be a JSON integer. A journal with a
+    float seq is a crafted file and must not verify as intact."""
+    path = tmp_path / "chain.jsonl"
+    log = ChainLog(str(path))
+    log.append(new_event("agent_start", "s", "a", "f"))
+    _rewrite_seq(path, "1.0")
+    result = verify(str(path))
+    assert result.ok is False
+    assert result.first_bad_seq is None
+    assert result.errors == ["seq discontinuity at line 1: expected 1, got 1.0"]
+
+
+def test_bool_seq_is_rejected_and_is_not_first_bad_seq(tmp_path):
+    """True == 1 in Python, and isinstance(True, int) holds, but a boolean is
+    not an integer seq: the line is a discontinuity and does not supply a
+    first_bad_seq."""
+    path = tmp_path / "chain.jsonl"
+    log = ChainLog(str(path))
+    log.append(new_event("agent_start", "s", "a", "f"))
+    _rewrite_seq(path, "true")
+    result = verify(str(path))
+    assert result.ok is False
+    assert result.first_bad_seq is None
+    assert result.errors == ["seq discontinuity at line 1: expected 1, got True"]

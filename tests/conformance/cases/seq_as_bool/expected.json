@@ -1,0 +1,19 @@
+{
+  "description": "The first event has seq true, the rest 2 and 3, with correct hashes. Python treats True as 1 and would otherwise let this through. The first line is a discontinuity (expected 1, got True); the expected value then advances to 2 as it does after any non-integer seq, so lines 2 and 3 are clean. first_bad_seq is None, since a boolean is not an integer seq.",
+  "verify": {
+    "ok": false,
+    "count": 3,
+    "first_bad_seq": null,
+    "errors": [
+      "seq discontinuity at line 1: expected 1, got True"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq None in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

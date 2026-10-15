@@ -21,6 +21,19 @@ from .events import canonical_json
 PRIVATE_KEY_NAME = "aileron_ed25519.key"
 PUBLIC_KEY_NAME = "aileron_ed25519.pub"
 
+__all__ = [
+    "PRIVATE_KEY_NAME",
+    "PUBLIC_KEY_NAME",
+    "check_against_checkpoints",
+    "checkpoint_hash",
+    "checkpoint_payload",
+    "generate_keypair",
+    "load_public_key",
+    "read_checkpoints",
+    "sign_checkpoint",
+    "verify_checkpoint",
+]
+
 
 def _now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -30,26 +43,38 @@ def _canonical(obj: Any) -> bytes:
     return canonical_json(obj).encode("utf-8")
 
 
-def _signed_payload(checkpoint: dict) -> bytes:
-    """Bytes that were signed: canonical JSON of the checkpoint minus
-    signature/pubkey_path."""
+def checkpoint_payload(checkpoint: dict) -> bytes:
+    """The exact bytes an Ed25519 checkpoint signature covers.
+
+    Canonical JSON of the checkpoint with ``signature`` and ``pubkey_path``
+    removed. Every other field is signed, including ``log_path``, ``index``
+    and ``prev_checkpoint_hash``. External tools that re-verify or anchor a
+    checkpoint (for example in a transparency log) must rebuild precisely
+    these bytes, so this is public API and its output is covered by SPEC.md.
+    """
     return _canonical(
         {k: v for k, v in checkpoint.items() if k not in ("signature", "pubkey_path")}
     )
 
 
-def _checkpoint_hash(checkpoint: dict) -> str:
-    """Hash of a checkpoint's signed payload, used to chain checkpoints."""
-    return hashlib.sha256(_signed_payload(checkpoint)).hexdigest()
+def checkpoint_hash(checkpoint: dict) -> str:
+    """SHA-256 hex of :func:`checkpoint_payload`; the value the next
+    checkpoint records as ``prev_checkpoint_hash``."""
+    return hashlib.sha256(checkpoint_payload(checkpoint)).hexdigest()
 
 
-def _read_checkpoints(log_path: str) -> list[dict]:
-    """All checkpoint objects recorded for ``log_path``, in file order."""
+def read_checkpoints(log_path: str) -> list[dict]:
+    """All checkpoint objects recorded for ``log_path``, in file order.
+
+    Reads ``<log_path>.checkpoints.jsonl``. Blank and unparseable lines are
+    skipped; nothing here verifies a signature. Returns ``[]`` when the file
+    does not exist.
+    """
     ckpt_file = f"{log_path}.checkpoints.jsonl"
     if not os.path.exists(ckpt_file):
         return []
     out: list[dict] = []
-    with open(ckpt_file, "r", encoding="utf-8") as fh:
+    with open(ckpt_file, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -130,9 +155,9 @@ def sign_checkpoint(log_path: str, key_path: str) -> dict:
     # Chain the checkpoints to each other, exactly as events are chained. A
     # deleted or reordered line then breaks a signature-covered link instead of
     # silently rolling coverage back to an older, narrower checkpoint.
-    prior = _read_checkpoints(log_path)
+    prior = read_checkpoints(log_path)
     index = len(prior) + 1
-    prev_ckpt_hash = _checkpoint_hash(prior[-1]) if prior else chainlog.GENESIS_PREV_HASH
+    prev_ckpt_hash = checkpoint_hash(prior[-1]) if prior else chainlog.GENESIS_PREV_HASH
     checkpoint = {
         "ts": _now_ts(),
         "log_path": str(log_path),
@@ -165,7 +190,7 @@ def check_against_checkpoints(log_path: str) -> list[str]:
     truncated journal even though the evidence of truncation is lying beside
     it, which is the worst possible answer to give an operator.
     """
-    checkpoints = _read_checkpoints(log_path)
+    checkpoints = read_checkpoints(log_path)
     if not checkpoints:
         return []
     events = chainlog.ChainLog.read(log_path)
@@ -207,7 +232,7 @@ def check_against_checkpoints(log_path: str) -> list[str]:
     return problems
 
 
-def _load_public_key(key_path: str) -> Ed25519PublicKey:
+def load_public_key(key_path: str) -> Ed25519PublicKey:
     """Load an ed25519 public key from ``key_path``; accepts a PEM public key,
     a PEM private key (public half derived), or a directory containing the
     standard keypair files (the public key is preferred, so verification
@@ -238,12 +263,12 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
     checkpoint was signed do not invalidate it; truncation below the
     checkpointed prefix, or any rewrite of it, does.
     """
-    checkpoints = _read_checkpoints(log_path)
+    checkpoints = read_checkpoints(log_path)
     if not checkpoints:
         return False
 
     try:
-        public = _load_public_key(key_path)
+        public = load_public_key(key_path)
     except Exception:
         return False
 
@@ -255,8 +280,8 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
             continue  # a zero-coverage checkpoint attests to nothing
         try:
             signature = base64.b64decode(checkpoint["signature"])
-            public.verify(signature, _signed_payload(checkpoint))
-        except Exception:
+            public.verify(signature, checkpoint_payload(checkpoint))
+        except Exception:  # noqa: S112 - an unverifiable checkpoint is dropped; the index gap check below then fails
             continue
         valid.append(checkpoint)
     if not valid:
@@ -272,7 +297,7 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
             return False  # a checkpoint was deleted, duplicated, or reordered
         if checkpoint.get("prev_checkpoint_hash") != prev_hash:
             return False
-        prev_hash = _checkpoint_hash(checkpoint)
+        prev_hash = checkpoint_hash(checkpoint)
 
     result = chainlog.verify(log_path)
     if not result.ok:
@@ -287,3 +312,11 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
         if events[count - 1].get("hash") != checkpoint.get("tip_hash"):
             return False
     return True
+
+
+# The helpers above were private until 0.1.6. External tools had started to
+# import them by their old names, so those names stay as aliases.
+_signed_payload = checkpoint_payload
+_checkpoint_hash = checkpoint_hash
+_read_checkpoints = read_checkpoints
+_load_public_key = load_public_key

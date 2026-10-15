@@ -6,11 +6,14 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron.chainlog import ChainLog  # noqa: E402
-from aileron.cli import main  # noqa: E402
-from aileron.events import new_event  # noqa: E402
+from aileron import __version__
+from aileron.chainlog import ChainLog
+from aileron.cli import main
+from aileron.events import new_event
 
 
 def _build_chain(path: Path) -> Path:
@@ -145,7 +148,7 @@ def test_demo_builds_chain_and_report(tmp_path, capsys):
     chain = tmp_path / "demo.chain.jsonl"
     report = tmp_path / "demo-report.html"
     assert chain.exists() and report.exists()
-    events = [json.loads(l) for l in chain.read_text().splitlines() if l.strip()]
+    events = [json.loads(line) for line in chain.read_text().splitlines() if line.strip()]
     types = [e["type"] for e in events]
     assert types[0] == "agent_start" and types[-1] == "agent_end"
     assert "alert" in types
@@ -213,8 +216,8 @@ def _log_with_checkpoint(tmp_path, n=6):
 
 
 def _truncate(log_path, keep):
-    lines = open(log_path, encoding="utf-8").read().splitlines()
-    open(log_path, "w", encoding="utf-8").write("\n".join(lines[:keep]) + "\n")
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
+    Path(log_path).write_text("\n".join(lines[:keep]) + "\n", encoding="utf-8")
 
 
 def test_verify_detects_truncation_via_adjacent_checkpoints(tmp_path, capsys):
@@ -259,7 +262,7 @@ def test_report_badge_reflects_checkpoint_contradiction(tmp_path):
 def test_verify_detects_rewrite_inside_checkpointed_prefix(tmp_path, capsys):
     """Same event count, different content within the signed prefix."""
     log_path = _log_with_checkpoint(tmp_path, n=4)
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     # Rebuild a same-length but different chain, so the chain itself is valid.
     import os
     os.remove(log_path)
@@ -268,3 +271,17 @@ def test_verify_detects_rewrite_inside_checkpointed_prefix(tmp_path, capsys):
         log.append(new_event("tool_call", "s", "bot", "demo", tool={"name": f"forged{i}"}))
     assert main(["verify", log_path]) == 2
     assert "appears rewritten" in capsys.readouterr().err
+
+
+def test_version_flag_prints_package_version(capsys):
+    """``aileron --version`` must report the same version the package exports."""
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"aileron {__version__}"
+
+
+def test_version_matches_pyproject():
+    """The two places the version is written must agree, or releases drift."""
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'version = "{__version__}"' in text

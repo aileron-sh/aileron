@@ -7,11 +7,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from aileron import signing
 from aileron.chainlog import ChainLog
 from aileron.events import new_event
 from aileron.signing import (
     check_against_checkpoints,
+    checkpoint_hash,
+    checkpoint_payload,
     generate_keypair,
+    load_public_key,
+    read_checkpoints,
     sign_checkpoint,
     verify_checkpoint,
 )
@@ -20,7 +25,7 @@ from aileron.signing import (
 def make_log(tmp_path, name="chain.jsonl", n=3):
     path = str(tmp_path / name)
     log = ChainLog(path)
-    for i in range(n):
+    for _ in range(n):
         log.append(new_event("tool_call", "s", "bot", "fw", tool={"name": "t"}))
     return path
 
@@ -30,8 +35,8 @@ def test_generate_keypair(tmp_path):
     assert os.path.exists(key_path) and os.path.exists(pub_path)
     assert key_path.endswith("aileron_ed25519.key")
     assert pub_path.endswith("aileron_ed25519.pub")
-    assert b"PRIVATE KEY" in open(key_path, "rb").read()
-    assert b"PUBLIC KEY" in open(pub_path, "rb").read()
+    assert b"PRIVATE KEY" in Path(key_path).read_bytes()
+    assert b"PUBLIC KEY" in Path(pub_path).read_bytes()
 
 
 def test_sign_and_verify_roundtrip(tmp_path):
@@ -47,7 +52,7 @@ def test_sign_and_verify_roundtrip(tmp_path):
 
     ckpt_file = f"{log_path}.checkpoints.jsonl"
     assert os.path.exists(ckpt_file)
-    lines = open(ckpt_file).read().splitlines()
+    lines = Path(ckpt_file).read_text().splitlines()
     assert json.loads(lines[-1]) == ckpt
 
     # verify with private key path or public key path
@@ -75,7 +80,7 @@ def test_verify_checkpoint_prefix_semantics(tmp_path):
     assert verify_checkpoint(log_path, key_path) is True
 
     # Truncate below the checkpointed count: must fail.
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     with open(log_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines[:2]) + "\n")
     assert verify_checkpoint(log_path, key_path) is False
@@ -86,11 +91,11 @@ def test_verify_checkpoint_tampered_log_fails(tmp_path):
     log_path = make_log(tmp_path)
     sign_checkpoint(log_path, key_path)
 
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     ev = json.loads(lines[0])
     ev["status"] = "blocked"
     lines[0] = json.dumps(ev, sort_keys=True, separators=(",", ":"))
-    open(log_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(log_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert verify_checkpoint(log_path, key_path) is False
 
@@ -112,9 +117,9 @@ def test_verify_checkpoint_no_checkpoints_file(tmp_path):
 def test_sign_refuses_broken_chain(tmp_path):
     key_path, _ = generate_keypair(str(tmp_path))
     log_path = make_log(tmp_path)
-    lines = open(log_path, encoding="utf-8").read().splitlines()
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
     del lines[1]
-    open(log_path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    Path(log_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(ValueError):
         sign_checkpoint(log_path, key_path)
 
@@ -150,10 +155,10 @@ def test_checkpoint_reordering_cannot_roll_back_coverage(tmp_path):
 
     # Reorder so the narrow checkpoint is last, then truncate to it.
     ckpt = f"{log_path}.checkpoints.jsonl"
-    lines = open(ckpt, encoding="utf-8").read().splitlines()
-    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
-    kept = open(log_path, encoding="utf-8").read().splitlines()[:3]
-    open(log_path, "w", encoding="utf-8").write("\n".join(kept) + "\n")
+    lines = Path(ckpt).read_text(encoding="utf-8").splitlines()
+    Path(ckpt).write_text("\n".join([lines[1], lines[0]]) + "\n", encoding="utf-8")
+    kept = Path(log_path).read_text(encoding="utf-8").splitlines()[:3]
+    Path(log_path).write_text("\n".join(kept) + "\n", encoding="utf-8")
     assert verify_checkpoint(log_path, key_path) is False
 
 
@@ -188,8 +193,8 @@ def test_deleting_an_intermediate_checkpoint_is_detected(tmp_path):
     assert verify_checkpoint(log_path, key_path) is True
 
     ckpt = f"{log_path}.checkpoints.jsonl"
-    lines = open(ckpt, encoding="utf-8").read().splitlines()
-    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[0], lines[2]]) + "\n")
+    lines = Path(ckpt).read_text(encoding="utf-8").splitlines()
+    Path(ckpt).write_text("\n".join([lines[0], lines[2]]) + "\n", encoding="utf-8")
     assert verify_checkpoint(log_path, key_path) is False
 
 
@@ -198,13 +203,13 @@ def test_reordering_alone_still_verifies_when_the_log_is_intact(tmp_path):
     key_path, _pub = generate_keypair(str(tmp_path))
     log_path = str(tmp_path / "a.jsonl")
     log = ChainLog(log_path)
-    for c in range(2):
-        for i in range(3):
+    for _c in range(2):
+        for _i in range(3):
             log.append(new_event("tool_call", "s", "b", "f", tool={"name": "t"}))
         sign_checkpoint(log_path, key_path)
     ckpt = f"{log_path}.checkpoints.jsonl"
-    lines = open(ckpt, encoding="utf-8").read().splitlines()
-    open(ckpt, "w", encoding="utf-8").write("\n".join([lines[1], lines[0]]) + "\n")
+    lines = Path(ckpt).read_text(encoding="utf-8").splitlines()
+    Path(ckpt).write_text("\n".join([lines[1], lines[0]]) + "\n", encoding="utf-8")
     assert verify_checkpoint(log_path, key_path) is True
 
 
@@ -255,3 +260,64 @@ def test_honest_checkpoint_still_passes_on_an_intact_log(tmp_path):
     generate_keypair(str(tmp_path))
     sign_checkpoint(str(log_path), str(tmp_path / "aileron_ed25519.key"))
     assert check_against_checkpoints(str(log_path)) == []
+
+
+def test_checkpoint_payload_is_exactly_what_the_signature_covers(tmp_path):
+    """External re-verifiers rebuild these bytes, so pin them: every field
+    except signature and pubkey_path, canonical JSON, and the Ed25519
+    signature in the file verifies over them with the public key."""
+    import base64
+
+    log_path = make_log(tmp_path)
+    key_path, pub_path = generate_keypair(str(tmp_path))
+    ckpt = sign_checkpoint(log_path, key_path)
+    payload = checkpoint_payload(ckpt)
+    assert set(json.loads(payload)) == {
+        "ts", "log_path", "index", "prev_checkpoint_hash", "count", "tip_hash",
+    }
+    load_public_key(pub_path).verify(base64.b64decode(ckpt["signature"]), payload)
+
+
+def test_checkpoint_hash_chains_the_next_checkpoint(tmp_path):
+    log_path = make_log(tmp_path)
+    key_path, _ = generate_keypair(str(tmp_path))
+    first = sign_checkpoint(log_path, key_path)
+    second = sign_checkpoint(log_path, key_path)
+    assert second["prev_checkpoint_hash"] == checkpoint_hash(first)
+    assert second["index"] == first["index"] + 1
+
+
+def test_read_checkpoints_returns_file_order_and_skips_junk(tmp_path):
+    log_path = make_log(tmp_path)
+    assert read_checkpoints(log_path) == []
+    key_path, _ = generate_keypair(str(tmp_path))
+    a = sign_checkpoint(log_path, key_path)
+    b = sign_checkpoint(log_path, key_path)
+    ckpt_file = Path(f"{log_path}.checkpoints.jsonl")
+    ckpt_file.write_text(ckpt_file.read_text(encoding="utf-8") + "\nnot json\n\n", encoding="utf-8")
+    assert [c["index"] for c in read_checkpoints(log_path)] == [a["index"], b["index"]]
+
+
+def test_load_public_key_accepts_pub_private_and_directory(tmp_path):
+    key_path, pub_path = generate_keypair(str(tmp_path))
+    raw = load_public_key(pub_path).public_bytes_raw()
+    assert load_public_key(key_path).public_bytes_raw() == raw
+    assert load_public_key(str(tmp_path)).public_bytes_raw() == raw
+    with pytest.raises(ValueError, match="not an ed25519 key"):
+        bad = tmp_path / "rsa.pem"
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        bad.write_bytes(
+            rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            .public_key()
+            .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        )
+        load_public_key(str(bad))
+
+
+def test_private_helper_names_remain_as_aliases():
+    """aileron-anchor imported the underscored names before they were public."""
+    assert signing._signed_payload is checkpoint_payload
+    assert signing._checkpoint_hash is checkpoint_hash
+    assert signing._read_checkpoints is read_checkpoints
+    assert signing._load_public_key is load_public_key

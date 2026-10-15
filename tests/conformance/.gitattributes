@@ -1,0 +1,4 @@
+# Conformance fixtures are byte-exact evidence. One of them deliberately uses
+# CRLF line endings and trailing whitespace, and every hash depends on the
+# bytes as written, so git must never normalize anything in here.
+* -text

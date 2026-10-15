@@ -25,3 +25,18 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest tests/ -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # Pinned to an exact version so a ruff release that adds or tightens
+      # rules cannot turn main red on its own. To bump: install the new
+      # version locally, run `ruff check .`, fix or justify what it reports,
+      # then change this pin and the `ruff==` entry in pyproject.toml's dev
+      # extra in the same commit.
+      - run: python -m pip install ruff==0.16.4
+      - run: ruff check .

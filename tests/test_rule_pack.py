@@ -20,9 +20,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron import bundled_rules_dir  # noqa: E402
-from aileron.events import digest, new_event  # noqa: E402
-from aileron.policy import decide, load_rules  # noqa: E402
+from aileron import bundled_rules_dir
+from aileron.events import digest, new_event
+from aileron.policy import decide, load_rules
 
 EXAMPLES = json.loads((Path(__file__).parent / "rule_examples.json").read_text())
 

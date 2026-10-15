@@ -1,7 +1,7 @@
 """Aileron command-line interface.
 
 Subcommands (per SPEC): init, verify, sign-checkpoint, verify-checkpoint,
-report, export, rules test, proxy, demo.
+report, export, serve, detect, rules test, proxy, demo.
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+
+from aileron import __version__
 
 DEFAULT_LOG = "aileron.chain.jsonl"
 DEFAULT_KEY = "aileron_ed25519.key"
@@ -21,6 +23,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Flight recorder for AI agents: tamper-evident audit "
         "logging, policy enforcement, and incident reports.",
     )
+    parser.add_argument("--version", action="version", version=f"aileron {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="create keypair, chain log, and rules dir")
@@ -444,7 +447,7 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     session.call("read_file", {"path": "/etc/hostname"}, 8.0)
     session.call("web_search", {"query": "aileron flight recorder"}, 42.0)
     blocked = session.call("shell", {"cmd": "rm -rf / --no-preserve-root"}, 3.0)
-    session.call("write_file", {"path": "/tmp/notes.txt"}, 11.0)
+    session.call("write_file", {"path": "/tmp/notes.txt"}, 11.0)  # noqa: S108 - demo payload string, never opened
     session.end()
 
     events = list(log)
@@ -481,10 +484,8 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``aileron`` CLI. Returns a process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command == "rules":
-        handler = _cmd_rules_test  # only 'test' exists today
-    else:
-        handler = _DISPATCH[args.command]
+    # only 'test' exists under 'rules' today
+    handler = _cmd_rules_test if args.command == "rules" else _DISPATCH[args.command]
     try:
         return handler(args)
     except FileNotFoundError as exc:

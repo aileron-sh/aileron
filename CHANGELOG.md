@@ -6,6 +6,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [Unreleased]
+
+### Fixed
+
+- **SPEC.md described the wrong canonical JSON.** It said `ensure_ascii=False`;
+  the code has always used `ensure_ascii=True` with `allow_nan=False`. Anyone
+  writing an independent verifier from the spec would have computed different
+  hashes for any event containing non-ASCII text. The spec now matches the
+  code and explains why. It also catches up on everything added since 0.1.0:
+  `prefilter.py`, `mcpserver.py`, the 32-rule pack, and the current test
+  layout, and no longer hardcodes a version number that drifts.
+- **`verify` rejects a non-integer `seq`.** It compared `seq` with Python's
+  `==`, so a journal with `seq` written as `1.0` or `true`, and otherwise
+  correct hashes, verified as intact. A writer only ever emits integers, so
+  such a file is crafted, and the verdict now says so. Found while writing the
+  independent Go verifier, which had to reproduce the quirk to agree with
+  Python; both implementations now apply the integer rule and two conformance
+  fixtures pin it.
+- **`@track` records `async def` tools correctly.** Voice and video agent
+  frameworks such as LiveKit Agents declare every tool as a coroutine
+  function. Decorating one with `track` used to record the creation of the
+  coroutine object: a digest of its repr as the result, a latency of a few
+  microseconds, and `status=ok` even when the awaited call later failed. A
+  coroutine function now gets a coroutine wrapper. The policy decision runs
+  when the call is awaited and `PolicyBlocked` is raised before the body
+  starts; the event is appended when the await finishes, so latency covers
+  the real call and an exception inside it is recorded as `status=error`.
+  The wrapper still passes `inspect.iscoroutinefunction` and exposes the
+  original signature, so frameworks that build tool schemas from the
+  function see what they expect. The sync path is unchanged.
+
+### Added
+
+- Public checkpoint helpers in `aileron.signing`: `checkpoint_payload`,
+  `checkpoint_hash`, `read_checkpoints`, `load_public_key`. External tools
+  that re-verify or anchor checkpoints need exactly these bytes and were
+  importing private names to get them. The underscored names remain as
+  aliases. SPEC.md now lists every signed field, including `index` and
+  `prev_checkpoint_hash`, which it had omitted. SECURITY.md notes that the
+  signed `log_path` is disclosed to anyone a checkpoint is shared with.
+- `aileron --version` prints the package version. A test checks that it agrees
+  with `pyproject.toml`, so the two cannot drift apart silently again.
+- `examples/livekit_agent_tracking.py`: a LiveKit Agents voice agent whose
+  tools are wrapped with `track` and whose session runs inside
+  `track_agent(..., framework="livekit")`. A blocked tool call is turned into
+  a reply the LLM can read instead of crashing the session. LiveKit is the
+  framework being recorded; Aileron gains no dependency on it and the
+  example runs with the standard library when LiveKit is not installed.
+  `tests/test_examples.py` exercises the helpers with a fake async tool.
+
+### Internal
+
+- Added a ruff configuration (`[tool.ruff]` in `pyproject.toml`, rule set and
+  reasoning documented inline) and a `lint` job in CI that runs `ruff check .`.
+  The code was brought into compliance with mechanical fixes only; no runtime
+  behaviour changed. `ruff format` is not enforced.
+- **An independent verifier in Go, under `verifiers/go/`.** A tamper-evidence
+  tool whose only verifier is written by its author, in one language, is asking
+  for faith. `aileron-verify verify` and `aileron-verify verify-checkpoint`
+  reimplement the two verification commands from SPEC.md using only the Go
+  standard library: no third party code, no network, nothing shared with the
+  Python implementation beyond the specification. Exit codes and verdict lines
+  match the Python CLI, including the unauthenticated cross-check of an
+  adjacent checkpoints file.
+
+  The hard part is canonical JSON, because every hash depends on every byte of
+  it. The Go side does not use `encoding/json` for output. It parses with its
+  own reader so that `5.0` stays a float, lone surrogate escapes survive, and
+  integers keep arbitrary precision, then writes Python's `json.dumps` output
+  byte for byte: keys sorted by code point, every non-ASCII character escaped
+  as lowercase hex with UTF-16 surrogate pairs above U+FFFF, no escaping of
+  `<`, `>`, `&` or `/`, and floats printed as Python's `repr` prints them, with
+  the switch to exponent notation at exactly the same boundaries. Checked
+  against three million random doubles during development and against the
+  committed cases on every test run.
+
+- **A conformance suite that pins the two implementations together.**
+  `scripts/gen_conformance.py` uses the real library to build the fixtures
+  under `tests/conformance/`: intact, edited, deleted, reordered and inserted
+  events; content capture; non-ASCII text, emoji, control characters and
+  unicode keys; floats at the formatting boundaries, big integers and `-0.0`;
+  signed checkpoints with the public key, plus truncation and prefix rewrites
+  that the checkpoint catches; and a file of canonical JSON cases. Each case
+  carries what the Python implementation says about it. Go tests replay every
+  fixture; `tests/test_conformance.py` does the same in Python and, when a Go
+  toolchain is on PATH, builds the Go binary and checks it agrees on every
+  verdict and every byte. A new CI workflow runs the Go side.
+
+- **A new SPEC.md section, "Independent verification",** that states the
+  canonicalization rules, what is hashed, what is signed, and the prefix
+  semantics precisely enough for a third implementation to be written from it.
+  Writing the second implementation also found two places where SPEC.md
+  described the code wrongly (`ensure_ascii` and the signed checkpoint fields);
+  both now match the code.
+
 ## [0.1.5] - 2026-08-25
 
 **Performance release.** Matching the bundled rule pack against a large payload

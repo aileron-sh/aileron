@@ -1,0 +1,22 @@
+{
+  "description": "Line 2 carries a duplicate key appended after the real one; line 4 spells an integer as 3e0. Both re-serialize differently from the stored bytes.",
+  "verify": {
+    "ok": false,
+    "count": 6,
+    "first_bad_seq": 2,
+    "errors": [
+      "line 2: non-canonical encoding",
+      "hash mismatch at seq 2 (content tampered)",
+      "line 4: non-canonical encoding",
+      "hash mismatch at seq 4 (content tampered)"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq 2 in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}

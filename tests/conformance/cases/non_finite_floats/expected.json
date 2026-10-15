@@ -1,0 +1,22 @@
+{
+  "description": "NaN on line 3 and 1e400 (which parses to infinity) on line 6. Python's json module accepts both on input; canonicalization refuses them.",
+  "verify": {
+    "ok": false,
+    "count": 6,
+    "first_bad_seq": 3,
+    "errors": [
+      "line 3: uncanonicalizable content: Out of range float values are not JSON compliant: nan",
+      "hash mismatch at seq 3 (content tampered)",
+      "line 6: uncanonicalizable content: Out of range float values are not JSON compliant: inf",
+      "hash mismatch at seq 6 (content tampered)"
+    ],
+    "exit_code": 2,
+    "verdict": "TAMPERED at seq 3 in journal.jsonl"
+  },
+  "checkpoint": {
+    "key": "aileron_ed25519.pub",
+    "valid": false,
+    "exit_code": 1,
+    "verdict": "FAILED: checkpoint invalid for journal.jsonl"
+  }
+}
