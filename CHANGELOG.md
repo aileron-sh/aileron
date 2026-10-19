@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
-## [Unreleased]
+## [0.1.6] - 2026-10-19
+
+**Security release.** An MCP server that answered with a value the journal
+cannot hold could make the proxy drop the record of a call it had already
+executed, while `verify` still said OK. Also in this release: an independent
+verifier written in Go with a conformance suite that pins it to the Python
+implementation, `@track` support for `async def` tools, and public checkpoint
+helpers.
 
 ### Security
 
