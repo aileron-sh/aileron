@@ -137,3 +137,26 @@ def test_badge_escapes_verify_result_fields(tmp_path):
     doc = out.read_text(encoding="utf-8")
     assert "<img src=x" not in doc
     assert "&lt;img" in doc
+
+
+def test_report_renders_hook_events(tmp_path):
+    """A blocked Claude Code hook event renders like any other row, and a hostile tool name is escaped."""
+    from aileron.hook import DEFAULT_AGENT_NAME, DEFAULT_FRAMEWORK, HookOptions, build_event
+
+    options = HookOptions(log_path=str(tmp_path / "hook.jsonl"), rules_path=None, capture_content=False,
+                          agent_name=DEFAULT_AGENT_NAME, framework=DEFAULT_FRAMEWORK)
+    base = {"session_id": "sess-1", "hook_event_name": "PreToolUse", "tool_use_id": "toolu_1", "cwd": "/home/me"}
+    blocked = build_event({**base, "tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}, options)
+    blocked["status"] = "blocked"
+    blocked["policy"] = {"rule_id": "local-001", "action": "block"}
+    hostile = build_event({**base, "tool_name": "<script>alert(1)</script>", "tool_input": {}}, options)
+    log = ChainLog(options.log_path)
+    recs = [log.append(blocked), log.append(hostile)]
+    out = tmp_path / "report.html"
+    render_html(recs, FakeVerifyResult(ok=True, count=2), str(out))
+    doc = out.read_text(encoding="utf-8")
+    assert "<td>Bash</td>" in doc
+    assert 'class="pill blocked">blocked</span>' in doc
+    assert "local-001" in doc
+    assert "<script>alert(1)</script>" not in doc
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in doc

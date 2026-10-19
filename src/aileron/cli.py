@@ -1,7 +1,7 @@
 """Aileron command-line interface.
 
 Subcommands (per SPEC): init, verify, sign-checkpoint, verify-checkpoint,
-report, export, serve, detect, rules test, proxy, demo.
+report, export, serve, detect, rules test, proxy, hook, demo.
 """
 
 from __future__ import annotations
@@ -95,6 +95,28 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="recorded as session_id on every event; any string, reuse it to group runs "
                         "(env AILERON_SESSION_ID; default: a fresh uuid4 hex per run)")
     p.add_argument("cmd", nargs=argparse.REMAINDER, help="-- <cmd...>")
+
+    p = sub.add_parser(
+        "hook",
+        help="Claude Code PreToolUse/PostToolUse command hook (reads one payload from stdin)",
+        description="Claude Code PreToolUse / PostToolUse / PostToolUseFailure command hook. "
+                    "Reads one hook payload from stdin, journals the tool call as a chained "
+                    "tool_call event, and exits 2 to block it. Writes nothing to stdout.",
+        epilog="exit status: 0 recorded (and, on PreToolUse, allowed); 2 blocked by a rule, "
+               "input refused, rules unloadable, or journal unavailable, with the reason on "
+               "stderr; never 1. session_id always comes from the hook payload; "
+               "AILERON_SESSION_ID is ignored here.",
+    )
+    p.add_argument("--log", metavar="PATH", default=None,
+                   help="chain JSONL journal (env AILERON_LOG; no default: the hook refuses to run without one)")
+    p.add_argument("--rules", metavar="PATH", default=None,
+                   help="rules file or directory; without it calls are recorded but never blocked")
+    p.add_argument("--capture-content", action="store_true",
+                   help="record tool_input and tool_response (default: digests only)")
+    p.add_argument("--agent", metavar="NAME", default=None,
+                   help="recorded as agent.name on every event (env AILERON_AGENT; default: claude-code)")
+    p.add_argument("--framework", metavar="NAME", default=None,
+                   help="recorded as agent.framework on every event (env AILERON_FRAMEWORK; default: claude-code)")
 
     p = sub.add_parser("demo", help="run a scripted fake-agent session")
     p.add_argument(
@@ -371,6 +393,67 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
     return run_proxy(cmd, log, rules, session_id=session_id, agent_name=agent, framework=framework)
 
 
+def _one_line(value: object) -> str:
+    """Collapse any text or exception to one line without importing anything.
+
+    The hook's error handlers use this rather than ``hook.one_line`` so they
+    work when the ``.hook`` import itself is what failed.
+    """
+    return " ".join(str(value).split())
+
+
+def _hook_say(message: str) -> None:
+    """Print one line to stderr for the hook, ignoring a stderr that is gone.
+
+    A closed or broken stderr must not turn a hook exit code into anything
+    but 0 or 2; the record is already on disk by the time this is called.
+    When stderr is None, print would fall back to stdout, which the hook
+    never writes, so nothing is printed at all.
+    """
+    if sys.stderr is None:
+        return
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def _cmd_hook(args: argparse.Namespace) -> int:
+    """Claude Code hook: exit 0 or 2, never 1; nothing on stdout.
+
+    Exit 1 is a non-blocking error in Claude Code, so main()'s ValueError
+    path must stay unreachable from here: every failure, config or internal,
+    is reported on stderr and turned into 2, and the handlers depend on no
+    name bound inside the try, so a failed import of the hook module ends the
+    same way. stdin is read first so Claude Code never sees a broken pipe on
+    a config error.
+    """
+    try:
+        from .hook import DEFAULT_AGENT_NAME, DEFAULT_FRAMEWORK, MAX_INPUT_BYTES, HookOptions, run_hook
+
+        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+        log_path = (args.log or os.environ.get("AILERON_LOG") or "").strip()
+        if not log_path:
+            raise ValueError("no journal path: pass --log or set AILERON_LOG")
+        options = HookOptions(
+            log_path=log_path,
+            rules_path=args.rules,
+            capture_content=args.capture_content,
+            agent_name=_identity_value(args.agent, "AILERON_AGENT", DEFAULT_AGENT_NAME, "--agent"),
+            framework=_identity_value(args.framework, "AILERON_FRAMEWORK", DEFAULT_FRAMEWORK, "--framework"),
+        )
+        outcome = run_hook(raw, options)
+    except ValueError as exc:
+        _hook_say(f"aileron: {_one_line(exc)}; refusing to continue")
+        return 2
+    except Exception as exc:
+        _hook_say(f"aileron: hook failed ({type(exc).__name__}: {_one_line(exc)}); refusing to continue")
+        return 2
+    if outcome.message:
+        _hook_say(outcome.message)
+    return outcome.exit_code
+
+
 def _load_demo_rules():
     """Load the example rules shipped with the package for the demo."""
     from . import bundled_rules_dir
@@ -522,6 +605,7 @@ _DISPATCH = {
     "detect": _cmd_detect,
     "serve": _cmd_serve,
     "proxy": _cmd_proxy,
+    "hook": _cmd_hook,
     "demo": _cmd_demo,
 }
 

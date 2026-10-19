@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -409,3 +410,151 @@ def test_proxy_flags_after_double_dash_go_to_child(tmp_path, proxy_stub):
     (call,) = proxy_stub
     assert call["child_argv"] == ["child", "--agent", "x"]
     assert call["agent_name"] == "mcp-proxy"
+
+
+# -------------------------------------------------------------------- hook
+
+
+HOOK_PAYLOAD = json.dumps({
+    "session_id": "00893aaf-19fa-41d2-8238-13269b9b3ca0",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_input": {"file_path": "/etc/hostname"},
+    "tool_use_id": "toolu_01ABC",
+    "cwd": "/home/me/project",
+    "permission_mode": "default",
+}).encode("utf-8")
+
+
+@pytest.fixture
+def hook_env(monkeypatch):
+    """Clear the identity and journal variables so the developer's shell cannot leak in."""
+    for name in (*IDENTITY_ENV, "AILERON_LOG"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _hook_main(monkeypatch, argv, payload=HOOK_PAYLOAD) -> int:
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload)))
+    return main(["hook", *argv])
+
+
+def test_hook_dispatch_through_main(tmp_path, monkeypatch, capsys, hook_env):
+    log = tmp_path / "hook.jsonl"
+    assert _hook_main(monkeypatch, ["--log", str(log)]) == 0
+    assert capsys.readouterr() == ("", "")
+    (event,) = ChainLog.read(str(log))
+    assert event["meta"]["transport"] == "claude-code-hook"
+    assert event["tool"]["name"] == "Read"
+    assert event["session_id"] == "00893aaf-19fa-41d2-8238-13269b9b3ca0"
+
+
+def test_hook_missing_log_path_exits_2(tmp_path, monkeypatch, capsys, hook_env):
+    # cwd is where a relative default would land, so the directory inspected below must be it.
+    monkeypatch.chdir(tmp_path)
+    assert _hook_main(monkeypatch, []) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "aileron: no journal path: pass --log or set AILERON_LOG; refusing to continue\n"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_hook_log_from_env(tmp_path, monkeypatch, hook_env):
+    log = tmp_path / "from-env.jsonl"
+    monkeypatch.setenv("AILERON_LOG", str(log))
+    assert _hook_main(monkeypatch, []) == 0
+    assert len(ChainLog.read(str(log))) == 1
+    # A flag beats the variable.
+    other = tmp_path / "from-flag.jsonl"
+    assert _hook_main(monkeypatch, ["--log", str(other)]) == 0
+    assert len(ChainLog.read(str(other))) == 1
+    assert len(ChainLog.read(str(log))) == 1
+
+
+def test_bad_identity_exits_2(tmp_path, monkeypatch, capsys, hook_env):
+    """The proxy exits 1 on a bad identity; the hook must exit 2, because 1 lets the call run."""
+    log = tmp_path / "hook.jsonl"
+    monkeypatch.setenv("AILERON_AGENT", "a\nb")
+    assert _hook_main(monkeypatch, ["--log", str(log)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("aileron: AILERON_AGENT: must be 1 to 128 printable characters")
+    assert err.endswith("; refusing to continue\n")
+    assert not log.exists()
+    monkeypatch.delenv("AILERON_AGENT")
+    assert _hook_main(monkeypatch, ["--log", str(log), "--framework", "x" * 129]) == 2
+    assert capsys.readouterr().err.startswith("aileron: --framework: must be 1 to 128")
+    assert not log.exists()
+
+
+def test_internal_error_exits_2(tmp_path, monkeypatch, capsys, hook_env):
+    import aileron.hook as hook_module
+
+    def boom(raw, options):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(hook_module, "run_hook", boom)
+    assert _hook_main(monkeypatch, ["--log", str(tmp_path / "hook.jsonl")]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "aileron: hook failed (RuntimeError: unexpected); refusing to continue\n"
+
+
+def test_hook_never_exits_1(tmp_path, monkeypatch, capsys, hook_env):
+    """main() maps ValueError to exit 1 for other commands; the hook never lets one reach it."""
+    import aileron.hook as hook_module
+
+    def boom(raw, options):
+        raise ValueError("a ValueError that escaped")
+
+    monkeypatch.setattr(hook_module, "run_hook", boom)
+    assert _hook_main(monkeypatch, ["--log", str(tmp_path / "hook.jsonl")]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "aileron: a ValueError that escaped; refusing to continue\n"
+
+
+def test_hook_import_failure_exits_2(tmp_path, monkeypatch, capsys, hook_env):
+    """A hook module that cannot be imported (pyyaml missing, broken checkout) is still exit 2, never 1.
+
+    The handlers must not depend on a name bound inside the try: when the
+    import is what failed, that name is unbound and the UnboundLocalError
+    would escape main() as exit 1, which Claude Code treats as non-blocking.
+    """
+    monkeypatch.setitem(sys.modules, "aileron.hook", None)
+    log = tmp_path / "hook.jsonl"
+    assert _hook_main(monkeypatch, ["--log", str(log)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("aileron: hook failed (")
+    assert "Error" in err
+    assert err.endswith("; refusing to continue\n")
+    assert not log.exists()
+
+
+class _BrokenStderr:
+    """A stderr whose reader has gone away: every write is a broken pipe."""
+
+    def write(self, text):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def flush(self):
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+def test_hook_broken_stderr_still_exits_2(tmp_path, monkeypatch, hook_env):
+    """Losing the message must not lose the exit code: the block is on disk and the code stays 2."""
+    rules = tmp_path / "rm.yml"
+    rules.write_text("id: local-001\ntitle: T\nmatch:\n  tool.arguments_contains: ['rm -rf']\naction: block\n",
+                     encoding="utf-8")
+    log = tmp_path / "hook.jsonl"
+    payload = json.dumps({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                          "tool_input": {"command": "rm -rf /"}}).encode("utf-8")
+    monkeypatch.setattr(sys, "stderr", _BrokenStderr())
+    assert _hook_main(monkeypatch, ["--log", str(log), "--rules", str(rules)], payload) == 2
+    (event,) = ChainLog.read(str(log))
+    assert event["status"] == "blocked"
+    # The config path, where nothing is journaled, exits 2 as well.
+    assert _hook_main(monkeypatch, [], payload) == 2
+    # A stderr of None would make print() fall back to stdout; the hook prints nothing instead.
+    monkeypatch.setattr(sys, "stderr", None)
+    assert _hook_main(monkeypatch, [], payload) == 2

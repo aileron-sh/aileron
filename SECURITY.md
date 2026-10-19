@@ -43,6 +43,9 @@ a reportable vulnerability.
   matching `block` rule should stop but that reaches the child process
   (including via framing tricks - newline-delimited vs. `Content-Length`
   framing confusion is explicitly in scope).
+- **Policy-enforcement bypass on the hook path**: a `PreToolUse` payload that
+  a matching `block` rule should stop but for which `aileron hook` exits 0,
+  any path on which it exits 1, or any path on which it writes to stdout.
 - **Canonicalization attacks**: two semantically different events that hash
   identically, or event JSON whose canonical encoding is ambiguous.
 - **Unsafe content handling**: paths where tool arguments/results are
@@ -92,6 +95,22 @@ a reportable vulnerability.
   tool calls rather than letting them run unrecorded. A peer can therefore
   deny mediation (by crashing the proxy), but cannot obtain unlogged
   execution through it.
+- **Hook enforcement is bounded by Claude Code's hook contract.**
+  `aileron hook` blocks by exit code 2 and fails closed on its own failures,
+  but Claude Code decides what a timed-out or crashed hook means
+  (`onFailure: "block"` makes that a block from 2.1.295), `@` file references
+  never fire a tool hook, a mod handling `tool.check` can approve a call the
+  hook blocked unless the hook is in managed settings, and a sibling hook's
+  `updatedInput` can change what runs after Aileron allowed it. The post
+  event records the executed input's digest and runs the rules on it again,
+  so these cases leave evidence.
+- **One journal, many writers.** The hook holds an exclusive lock around
+  open-and-append because Claude Code runs hooks in parallel; the proxy and
+  SDK are single-writer and do not. Sharing one journal between the hook and
+  another writer is unsupported.
+- **The hook runs as the agent's OS user.** Deleting the journal or removing
+  the hook from settings is detectable (chain, checkpoints, rules
+  `aileron-160` and `aileron-181`), not preventable.
 - **Identity fields are labels.** `--agent`, `--framework`, `--session-id`
   and their `AILERON_*` equivalents record what the operator or harness
   asserted; nothing authenticates them. A journal that says `agent.name:

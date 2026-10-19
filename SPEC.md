@@ -12,9 +12,10 @@ aileron/
   SPEC.md
   pyproject.toml
   src/aileron/__init__.py  events.py  chainlog.py  signing.py  policy.py  prefilter.py
-                 detect.py  sdk.py  proxy.py  mcpserver.py  otel.py  report.py  cli.py  py.typed
+                 detect.py  sdk.py  proxy.py  hook.py  mcpserver.py  otel.py  report.py  cli.py  py.typed
   src/aileron/rules/examples/*.yml       # bundled rule pack (32 rules) + rate-spike-note.md
-  tests/                                 # one test file per module, plus test_rule_pack.py,
+  tests/                                 # one test file per module (test_hook.py included),
+                                         # plus test_rule_pack.py,
                                          # test_metrics.py, test_real_mcp_server.py (opt-in, live)
 ```
 `pyproject.toml`: PEP 621, setuptools, `[project.scripts] aileron = "aileron.cli:main"`,
@@ -48,6 +49,16 @@ status('ok|error|blocked'), latency_ms, policy({rule_id,action}|None), meta(dict
 printable characters with no leading or trailing whitespace; `validate()` does not enforce this
 bound, so journals written by older code stay valid.
 
+`meta.transport` (string, optional) names the producing surface: `mcp-stdio` on proxy events,
+`claude-code-hook` on hook events, absent on SDK events. Hook events carry `meta.hook` with `event`
+(the Claude Code `hook_event_name`), `tool_use_id` (string or null), and when present `cwd`,
+`permission_mode`, `agent_id`, `agent_type`, `mcp_server{name,source}`, `is_interrupt`
+(PostToolUseFailure only) and `dropped` (names of payload fields omitted for size or type). On a
+PreToolUse record `status` is the policy verdict (`ok` released, `blocked` stopped); on a
+PostToolUse or PostToolUseFailure record `status` is the outcome and `policy` is the verdict of the
+rules against the executed call. Synthetic rule ids: `aileron-pending-limit` (proxy capacity
+refusal) and `aileron-hook-config` (hook refused because rules could not be loaded).
+
 ## Hash-chained log (chainlog.py)
 Append-only JSONL. Genesis prev_hash = '0'*64.
 ```python
@@ -57,7 +68,14 @@ class ChainLog:
     def __iter__ / classmethod read(path) -> list[dict]
 @dataclass VerifyResult: ok: bool; count: int; first_bad_seq: int|None; errors: list[str]
 def verify(path) -> VerifyResult   # checks seq continuity, prev_hash links, hash recompute
+def exclusive_lock(path, timeout) -> ContextManager[None]  # advisory lock on <path>.lock; TimeoutError after timeout
 ```
+A journal is written either by one long-lived process (proxy, SDK) or by short-lived processes that
+each hold `exclusive_lock` around construction and append, never both. The lock is `fcntl.flock` on
+POSIX and `msvcrt.locking` on Windows, retried every 10 ms; a busy lock is `BlockingIOError` or
+`PermissionError`, and any other `OSError` surfaces at once. The Windows branch is untested because
+CI has no Windows runner. Where neither module imports, `exclusive_lock` raises `OSError` before
+opening anything, so no caller appends unlocked.
 
 ## Signing (signing.py)
 ```python
@@ -153,14 +171,17 @@ def track_agent(name, framework, log) -> AgentSession  # context manager emittin
 Default global log path: env `AILERON_LOG` or `./aileron.chain.jsonl`.
 
 Environment variables read by the library and the CLI.
-- `AILERON_LOG` (`sdk.default_log()`): journal path when no flag is given; read as given
+- `AILERON_LOG` (`sdk.default_log()`, `aileron hook`): journal path when no flag is given; read as
+  given by the SDK, stripped of surrounding whitespace by the hook
 - `AILERON_NO_PREFILTER` (`prefilter.py`): disable the regex prefilter; unset only when empty or `0`
-- `AILERON_AGENT` (`aileron proxy`): `agent.name` when `--agent` is absent
-- `AILERON_FRAMEWORK` (`aileron proxy`): `agent.framework` when `--framework` is absent
-- `AILERON_SESSION_ID` (`aileron proxy`): `session_id` when `--session-id` is absent
+- `AILERON_AGENT` (`aileron proxy`, `aileron hook`): `agent.name` when `--agent` is absent
+- `AILERON_FRAMEWORK` (`aileron proxy`, `aileron hook`): `agent.framework` when `--framework` is absent
+- `AILERON_SESSION_ID` (`aileron proxy` only): `session_id` when `--session-id` is absent;
+  `aileron hook` ignores it and always records the payload's `session_id`
 
 For `AILERON_AGENT`, `AILERON_FRAMEWORK` and `AILERON_SESSION_ID`, precedence is flag, then
-environment, then default, and an empty or whitespace value is unset.
+environment, then default. An empty or whitespace environment value counts as unset; an empty flag
+value is an error.
 
 Coroutine functions: when `inspect.iscoroutinefunction(fn)` is true, `track`
 returns an `async def` wrapper with the same event semantics as the sync path.
@@ -189,6 +210,55 @@ trace.
 def run_proxy(child_argv: list[str], log: ChainLog, rules: list[Rule]|None = None, *,
               session_id: str|None = None, agent_name: str = "mcp-proxy",
               framework: str = "mcp") -> int   # exit code of child; identity values are not validated here
+```
+
+## Claude Code hook (hook.py)
+`aileron hook` is a Claude Code `PreToolUse`, `PostToolUse` and `PostToolUseFailure` command hook. It
+reads one payload from stdin, journals the call as a `tool_call` event under `exclusive_lock`, runs
+the rules, and exits 0 or 2. It never writes to stdout, never exits 1 (a non-blocking error in Claude
+Code), and prints one line on stderr exactly when it exits 2. The CLI reads stdin first, then resolves
+the journal path (`--log`, then `AILERON_LOG`, both stripped of surrounding whitespace, else refuse)
+and the identity values; every failure there, and any exception escaping `run_hook`, is exit 2.
+
+Stdin contract: at most 16 MiB (`MAX_INPUT_BYTES`), strict UTF-8, one JSON object with no `NaN` or
+`Infinity`, no number that overflows to infinity, no duplicate keys at any depth, and no container
+nesting deeper than 256 levels (`MAX_NESTING`, checked without recursion so the bound is the same on
+every Python version). Required fields: `hook_event_name` in the three above, `session_id` (1 to 128
+printable characters, no surrounding whitespace), `tool_name` (1 to 256 printable characters), and
+the `tool_input` key (any value, `null` included). Anything else is refused with exit 2 and nothing
+journaled. Optional payload fields are copied into `meta.hook` only when they have the expected type
+and fit their cap (`tool_use_id` 128, `cwd` 1024, `permission_mode` 32, `agent_id` 128, `agent_type`
+128, `mcp_server.name` 256, `mcp_server.source` 32; `is_interrupt` must be a bool and is read on
+PostToolUseFailure only); otherwise they are left out and named in `meta.hook.dropped`. Every other
+payload field, `transcript_path` included, is ignored.
+
+Two events per call, joined by `session_id` and `meta.hook.tool_use_id`. The PreToolUse event is the
+enforcement record and is on disk before the hook returns; the post event records the outcome
+(`status` `ok` or `error`, `latency_ms` from a finite non-negative `duration_ms` else null,
+`result_digest` over `tool_response` on PostToolUse, `meta.error` as `{"digest": ...}` or the raw
+value with `--capture-content` on PostToolUseFailure). `decide()` runs on both with full content in
+memory: `tool.arguments`, `result` and the raw `error` value; the error's digest replaces it just
+before the append, since `ChainLog.append` never touches `meta`. A block on PreToolUse sets
+`status='blocked'` and exits 2; a block on a post event keeps `status`, records `policy`, and exits 2
+so Claude sees the message; an alert records `policy` and exits 0. A rules path that cannot be
+loaded (any exception), that yields no rules, or whose rules raise during `decide()` is journaled
+with `policy={"rule_id": "aileron-hook-config", "action": "block"}` and exit 2. A journal that
+cannot be written, a lock wait past `LOCK_TIMEOUT_S` included, is exit 2 with nothing recorded.
+
+Identity: `agent.name` is `--agent`, then `AILERON_AGENT`, then `claude-code`; `agent.framework` is
+`--framework`, then `AILERON_FRAMEWORK`, then `claude-code`; `session_id` is always the payload's and
+`AILERON_SESSION_ID` is ignored. `meta.transport` is `claude-code-hook`.
+```python
+TRANSPORT = "claude-code-hook"; MAX_INPUT_BYTES = 16 * 1024 * 1024; MAX_NESTING = 256
+LOCK_TIMEOUT_S = 10.0; RULE_CONFIG_REJECTED = "aileron-hook-config"; BLOCK_EXIT = 2
+class HookInputError(ValueError)                    # the message is the one-line reason
+@dataclass(frozen=True) HookOptions: log_path, rules_path, capture_content, agent_name, framework
+@dataclass(frozen=True) HookOutcome: exit_code (0 or 2), message (empty iff exit_code == 0), event
+def parse_payload(raw: bytes) -> dict                          # raises HookInputError
+def build_event(payload: dict, options: HookOptions) -> dict   # in-memory event, content attached
+def run_hook(raw: bytes, options: HookOptions) -> HookOutcome  # never prints, never raises for an
+                                                               # expected failure
+def one_line(value) -> str                                     # whitespace-collapsed message text
 ```
 
 ## Journal MCP server (mcpserver.py)
@@ -237,10 +307,14 @@ aileron detect <log> [--state s.json] [--save]  # replay log through Baseline; p
 aileron rules test <rules_path> <log>  # dry-run: prints Decision per event
 aileron proxy --log <path> [--rules <dir>] [--capture-content]
               [--agent <name>] [--framework <name>] [--session-id <id>] -- <cmd...>
+aileron hook [--log <path>] [--rules <path>] [--capture-content] [--agent <name>] [--framework <name>]
+                                       # Claude Code hook: one payload on stdin; exit 2 blocks;
+                                       # stdout stays empty; never exits 1
 aileron demo                           # scripted fake-agent session (digest-only mode, real Baseline
                                        # alerts) -> demo.chain.jsonl + demo-report.html
 ```
-All commands exit non-zero with clear stderr on failure; `verify` exits 2 on tamper.
+All commands exit non-zero with clear stderr on failure; `verify` exits 2 on tamper; `hook` exits 0 or
+2 only.
 
 ## Independent verification
 
@@ -427,6 +501,9 @@ verify             0  OK: <count> events verified in <log>
 verify-checkpoint  0  OK: checkpoint valid for <log>
                    1  FAILED: checkpoint invalid for <log>
                    1  error: <operational problem, including no key found>
+hook               0  recorded (and, on PreToolUse, allowed); nothing printed
+                   2  blocked by rule, input refused, rules unloadable, or journal unavailable;
+                      reason on stderr (never 1)
 ```
 
 Each problem found is printed first as its own `error: <message>` line on
@@ -455,10 +532,15 @@ compared.
 
 ## Module ownership (branches)
 - core: events.py chainlog.py signing.py + tests (test_events/test_chainlog/test_signing)
-- intercept: sdk.py proxy.py + tests (test_sdk/test_proxy)
+- intercept: sdk.py proxy.py hook.py + tests (test_sdk/test_proxy/test_hook); `exclusive_lock` stays
+  with core in chainlog.py
 - policy: policy.py prefilter.py detect.py src/aileron/rules/examples/* + tests (test_policy/test_prefilter/test_detect/test_rule_pack)
 - surface: pyproject.toml cli.py mcpserver.py otel.py report.py + tests (test_cli/test_mcpserver/test_otel/test_report) + __init__.py
 
 All modules import across each other ONLY via the signatures above. No other cross-module
-internals. Every module has `from __future__ import annotations`. Code style: type hints,
+internals. `hook.py` uses `events.new_event`, `events.digest`, `chainlog.ChainLog`,
+`chainlog.exclusive_lock`, `policy.load_rules`, `policy.decide` and `policy.Rule` (annotations
+only); `cli.py` uses `hook.run_hook`, `hook.HookOptions` and the `hook` constants, and formats its
+own hook error lines so they work when that import fails. Every module has
+`from __future__ import annotations`. Code style: type hints,
 docstrings on public functions. Tests use tmp_path fixtures; no network.

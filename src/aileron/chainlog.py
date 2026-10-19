@@ -1,16 +1,48 @@
-"""Aileron hash-chained append-only JSONL audit log."""
+"""Aileron hash-chained append-only JSONL audit log.
+
+A journal has one writer at a time. ``ChainLog`` itself does not lock: it
+reads the tip once when constructed and then appends, which is correct for a
+long-lived process such as the proxy or the SDK. Short-lived processes that
+share one journal (the Claude Code hook, which runs once per tool call and in
+parallel) wrap construction and append in ``exclusive_lock`` so two of them
+can never read the same tip and fork the chain. A journal is written either
+by one long-lived process or by locking short-lived ones, never both.
+"""
 from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .events import canonical_json, event_hash
 
+# Advisory file locking is stdlib on both families but lives in different
+# modules. If neither imports, exclusive_lock raises rather than letting a
+# caller append unlocked.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None  # type: ignore[assignment]
+
 GENESIS_PREV_HASH = "0" * 64
+
+# How long exclusive_lock sleeps between attempts. Fixed, not randomized:
+# contention is a handful of hook processes, and ruff's S311 would flag
+# ``random`` here.
+LOCK_RETRY_S = 0.01
+
+# What a non-blocking lock attempt raises when another holder has the lock:
+# EWOULDBLOCK from flock on POSIX, EACCES from msvcrt.locking on Windows.
+_LOCK_BUSY = (BlockingIOError, PermissionError)
 
 # Sentinel for "the chain is broken here" - it equals no real hash, so every
 # subsequent event is reported as unverifiable rather than silently accepted
@@ -102,6 +134,58 @@ class ChainLog:
     def read(cls, path: str) -> list[dict]:
         """Read all events from the log at ``path`` as a list of dicts."""
         return list(cls(path))
+
+
+def _try_lock(fd: int) -> bool:
+    """One non-blocking attempt on ``fd``; True when the lock is now held."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except _LOCK_BUSY:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def exclusive_lock(path: str, timeout: float) -> Iterator[None]:
+    """Hold an exclusive advisory lock on ``<path>.lock`` for the block.
+
+    For short-lived writers that share one journal: construct the ChainLog
+    (which replays the tip) and append inside the block, so two processes can
+    never read the same tip. Retries every 10 ms until ``timeout`` seconds,
+    then raises TimeoutError. The OS releases the lock on process exit, so a
+    killed holder leaves no stale lock, and the lock file is never deleted.
+    Raises OSError when the platform has no file locking. The proxy and SDK
+    are single-writer and do not take it.
+    """
+    if fcntl is None and msvcrt is None:
+        raise OSError("no file locking available on this platform")
+    lock_path = f"{path}.lock"
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        deadline = time.monotonic() + timeout
+        while not _try_lock(fd):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"lock {lock_path} held by another writer for {timeout}s")
+            time.sleep(LOCK_RETRY_S)
+        try:
+            yield
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)
