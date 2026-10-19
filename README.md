@@ -99,7 +99,17 @@ the child process sees it:
 $ aileron init                       # seeds a ./rules directory with starter rules
 $ aileron proxy --log run.chain.jsonl --rules rules -- \
     npx -y @modelcontextprotocol/server-filesystem /tmp
+$ AILERON_SESSION_ID=run-4821 aileron proxy --log run.chain.jsonl --rules rules \
+    --agent researcher --framework crewai -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
+
+Proxy flags go before `--`; everything after it belongs to the child. A
+harness can set `AILERON_AGENT`, `AILERON_FRAMEWORK` and `AILERON_SESSION_ID`
+per spawn instead of passing flags, and a flag wins over the environment. The
+journal records the identity you give it, so a rule such as
+`agent.name: researcher` matches on the proxy path. Reusing a session id
+across runs groups them: `detect` treats them as one session and the OTel
+export puts them in one trace.
 
 A blocked call returns a JSON-RPC error (`-32000: blocked by aileron rule
 <id>`) to the client; the child is never invoked.

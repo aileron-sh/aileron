@@ -44,6 +44,10 @@ Event dict keys: id, ts, seq, session_id, agent{name,framework,version}, type,
 tool{name,arguments_digest,arguments(opt-in,null default)}, result_digest, result(opt-in),
 status('ok|error|blocked'), latency_ms, policy({rule_id,action}|None), meta(dict), prev_hash, hash.
 
+`session_id`, `agent.name` and `agent.framework` are opaque strings. CLI surfaces accept 1 to 128
+printable characters with no leading or trailing whitespace; `validate()` does not enforce this
+bound, so journals written by older code stay valid.
+
 ## Hash-chained log (chainlog.py)
 Append-only JSONL. Genesis prev_hash = '0'*64.
 ```python
@@ -148,6 +152,16 @@ def track_agent(name, framework, log) -> AgentSession  # context manager emittin
 ```
 Default global log path: env `AILERON_LOG` or `./aileron.chain.jsonl`.
 
+Environment variables read by the library and the CLI.
+- `AILERON_LOG` (`sdk.default_log()`): journal path when no flag is given; read as given
+- `AILERON_NO_PREFILTER` (`prefilter.py`): disable the regex prefilter; unset only when empty or `0`
+- `AILERON_AGENT` (`aileron proxy`): `agent.name` when `--agent` is absent
+- `AILERON_FRAMEWORK` (`aileron proxy`): `agent.framework` when `--framework` is absent
+- `AILERON_SESSION_ID` (`aileron proxy`): `session_id` when `--session-id` is absent
+
+For `AILERON_AGENT`, `AILERON_FRAMEWORK` and `AILERON_SESSION_ID`, precedence is flag, then
+environment, then default, and an empty or whitespace value is unset.
+
 Coroutine functions: when `inspect.iscoroutinefunction(fn)` is true, `track`
 returns an `async def` wrapper with the same event semantics as the sync path.
 The policy decision and any `PolicyBlocked` happen when the coroutine is
@@ -164,11 +178,17 @@ Speaks JSON-RPC 2.0 over stdin/stdout (newline-delimited and Content-Length fram
 Spawns child: `argv` after `--`. Logs every `tools/call` request/response as tool_call events
 (tool.name = params.name, args digest from params.arguments; args attached in memory for policy).
 Policy block -> JSON-RPC error (-32000, "blocked by aileron rule <id>") returned to client, child
-NOT invoked, event status='blocked'. Non-tools/call messages pass through, optionally logged as
-meta-only. On shutdown, in-flight tools/call events that never received a response are journaled
-with status='error' and meta.error noting the missing response (crash-safe recording).
+NOT invoked, event status='blocked'. Non-tools/call messages pass through and are not logged.
+On shutdown, in-flight tools/call events that never received a response are journaled with
+status='error' and meta.error noting the missing response (crash-safe recording).
+Every event carries the identity the proxy was started with: `session_id` defaults to a fresh
+uuid4 hex per run, `agent.name` to `mcp-proxy` and `agent.framework` to `mcp`. A session id reused
+across runs groups them: `detect` treats them as one session and the OTel export puts them in one
+trace.
 ```python
-def run_proxy(child_argv: list[str], log: ChainLog, rules: list[Rule]|None) -> int  # exit code of child
+def run_proxy(child_argv: list[str], log: ChainLog, rules: list[Rule]|None = None, *,
+              session_id: str|None = None, agent_name: str = "mcp-proxy",
+              framework: str = "mcp") -> int   # exit code of child; identity values are not validated here
 ```
 
 ## Journal MCP server (mcpserver.py)
@@ -215,7 +235,8 @@ aileron export <log> -o spans.json
 aileron serve [--root .]        # read-only MCP server over journals in --root
 aileron detect <log> [--state s.json] [--save]  # replay log through Baseline; prints flags per event
 aileron rules test <rules_path> <log>  # dry-run: prints Decision per event
-aileron proxy --log <path> [--rules <dir>] [--capture-content] -- <cmd...>
+aileron proxy --log <path> [--rules <dir>] [--capture-content]
+              [--agent <name>] [--framework <name>] [--session-id <id>] -- <cmd...>
 aileron demo                           # scripted fake-agent session (digest-only mode, real Baseline
                                        # alerts) -> demo.chain.jsonl + demo-report.html
 ```

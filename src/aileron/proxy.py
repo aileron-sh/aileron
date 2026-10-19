@@ -38,6 +38,11 @@ MAX_PENDING = 4096
 # drain that journals in-flight calls always runs.
 CHILD_EXIT_TIMEOUT = 5.0
 
+# Identity stamped on every event when the caller supplies none. The CLI
+# resolves its flags and AILERON_* variables onto these.
+DEFAULT_AGENT_NAME = "mcp-proxy"
+DEFAULT_FRAMEWORK = "mcp"
+
 # Sentinel: the message could not be parsed, so it must not be forwarded.
 _UNPARSEABLE = object()
 
@@ -333,10 +338,14 @@ def _apply_response(event: dict, msg: dict, started: float,
     return event
 
 
-def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int:
+def run_proxy(child_argv: list[str], log: Any, rules: list | None = None, *,
+              session_id: str | None = None, agent_name: str = DEFAULT_AGENT_NAME,
+              framework: str = DEFAULT_FRAMEWORK) -> int:
     """Run the MCP stdio proxy. Returns the child's exit code.
 
     ``log`` is a ChainLog; ``rules`` is an optional list of policy Rules.
+    ``session_id``, ``agent_name`` and ``framework`` are recorded on every
+    event exactly as given; they are not validated here, the CLI bounds them.
     """
     child = subprocess.Popen(  # noqa: S603 - the operator chose child_argv; spawning it is the proxy's purpose
         child_argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE
@@ -344,9 +353,7 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
     assert child.stdin is not None and child.stdout is not None  # noqa: S101 - narrows Optional; both are PIPE above
     client_in = sys.stdin.buffer
     client_out = sys.stdout.buffer
-    session_id = uuid.uuid4().hex
-    agent_name = "mcp-proxy"
-    framework = "mcp"
+    session_id = session_id if session_id is not None else uuid.uuid4().hex
     lock = threading.Lock()
     pending: dict[Any, dict[str, Any]] = {}
     # Set when recording breaks: a flight recorder that cannot record must
