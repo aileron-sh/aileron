@@ -8,8 +8,35 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
 ## [Unreleased]
 
+### Security
+
+- **A server answering with `NaN` could erase the record of the call it had
+  just run.** The proxy parsed the child's response with `json.loads`, which
+  accepts `NaN` and `Infinity` even though they are not JSON, then digested the
+  result with the canonical serializer, which rightly refuses them. By that
+  point the call had already been removed from the in-flight table, so the
+  `ValueError` ended the reader thread and the journal got nothing: not an
+  error, not a "no response", nothing. `verify` said OK on the incomplete
+  journal and the proxy exited 0. A compromised server could choose which call
+  to erase; a hand-written server calling `json.dumps` on a float could do it
+  by accident. The reader now builds the record before it forgets the call,
+  journals an unrecordable response as `status=error` with the real latency,
+  answers a client message carrying `NaN` with a parse error instead of
+  crashing, and `run_proxy` returns 1 when recording broke even if the child
+  exited 0. Regression tests cover a `NaN` result, `Infinity` in error data,
+  and the client-side token.
+
 ### Fixed
 
+- **`@track` lost the record of a call whose result contained `NaN`.**
+  `_jsonable` tested serializability with the default `json.dumps`, which
+  allows `NaN`, so the digest raised after the tool had run and before the
+  event was appended. Non-finite floats now fall back to their repr like every
+  other value the journal cannot hold.
+- **A cancelled async tool call left no record.** `CancelledError` is a
+  `BaseException`, so the coroutine wrapper's `except Exception` let it
+  through unrecorded. It is now journaled as `status=error` with
+  `CancelledError` as the reason.
 - **SPEC.md described the wrong canonical JSON.** It said `ensure_ascii=False`;
   the code has always used `ensure_ascii=True` with `allow_nan=False`. Anyone
   writing an independent verifier from the spec would have computed different

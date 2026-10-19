@@ -412,3 +412,40 @@ def test_sync_function_returning_awaitable_is_unchanged(tmp_path):
     coro = outer()
     assert len(list(log)) == 1
     assert asyncio.run(coro) == 1
+
+
+def test_track_journals_a_call_whose_result_is_nan(tmp_path):
+    import math
+    log = ChainLog(str(tmp_path / "nan.jsonl"))
+
+    @track(log=log)
+    def stats():
+        return {"mean": float("nan")}
+
+    assert math.isnan(stats()["mean"])
+    recs = list(log)
+    assert len(recs) == 1 and recs[0]["status"] == "ok"
+    assert verify(log.path).ok
+
+
+def test_track_async_records_a_cancelled_call(tmp_path):
+    import asyncio
+    log = ChainLog(str(tmp_path / "cancel.jsonl"))
+
+    @track(log=log)
+    async def slow():
+        await asyncio.sleep(10)
+
+    async def main():
+        t = asyncio.create_task(slow())
+        await asyncio.sleep(0.01)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(main())
+    recs = list(log)
+    assert len(recs) == 1 and recs[0]["status"] == "error"
+    assert recs[0]["meta"]["error"] == "CancelledError"

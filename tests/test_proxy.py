@@ -471,3 +471,57 @@ def test_pending_limit_refuses_instead_of_forwarding(monkeypatch, tmp_path):
         "reached the child; a blocked record was a lie"
     )
     assert verify(sess.log.path).ok
+
+
+CHILD_NAN_RESULT = (
+    "import sys, json\n"
+    "for line in sys.stdin:\n"
+    "    req = json.loads(line)\n"
+    "    if req.get('method') != 'tools/call':\n"
+    "        continue\n"
+    "    if req.get('id') == 1:\n"
+    "        sys.stdout.write('{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":NaN}\\n')\n"
+    "    elif req.get('id') == 2:\n"
+    "        sys.stdout.write('{\"jsonrpc\":\"2.0\",\"id\":2,"
+    "\"error\":{\"code\":1,\"message\":\"x\",\"data\":Infinity}}\\n')\n"
+    "    else:\n"
+    "        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'result': {}}) + '\\n')\n"
+    "    sys.stdout.flush()\n"
+)
+
+
+def _call(i, name="shell"):
+    return json.dumps({"jsonrpc": "2.0", "id": i, "method": "tools/call",
+                       "params": {"name": name, "arguments": {"i": i}}}).encode()
+
+
+def test_unrecordable_child_response_still_leaves_a_record(monkeypatch, tmp_path):
+    """A server answering with NaN/Infinity must not be able to erase the call
+    it executed from the journal: reader-thread bookkeeping has to be crash-safe."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NAN_RESULT])
+    for i in (1, 2, 3):
+        sess.send(_call(i))
+        sess.recv_line()
+    rc = sess.close()
+    recs = sorted(sess.log, key=lambda r: r["seq"])
+    assert len(recs) == 3, [r["status"] for r in recs]
+    nan_result, inf_error, normal = recs
+    assert nan_result["status"] == "error"
+    assert "could not be recorded" in nan_result["meta"]["error"]
+    assert inf_error["status"] == "error"
+    assert "could not be recorded" in inf_error["meta"]["error"]
+    assert normal["status"] == "ok"
+    assert rc == 0  # recording never broke, so the child's exit code stands
+    res = verify(sess.log.path)
+    assert res.ok, res.errors
+
+
+def test_client_nan_argument_is_refused_not_a_crash(monkeypatch, tmp_path):
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON])
+    sess.send(b'{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"t","arguments":{"x":NaN}}}')
+    reply = sess.recv_line()
+    assert reply["error"]["code"] == -32700
+    sess.send(_call(10, "t"))
+    assert sess.recv_line()["id"] == 10
+    sess.close()
+    assert [r["status"] for r in sess.log] == ["ok"]
