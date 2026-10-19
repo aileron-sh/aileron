@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aileron import events
 from aileron.chainlog import ChainLog, verify
+from aileron.otel import to_otlp_spans
 from aileron.policy import Rule
 from aileron.proxy import run_proxy
 
@@ -62,7 +64,8 @@ CHILD_FRAMED = (
 class _ProxySession:
     """Runs run_proxy in a thread with pipe-backed fake stdin/stdout."""
 
-    def __init__(self, monkeypatch, tmp_path, child_argv, rules=None, capture_content=False):
+    def __init__(self, monkeypatch, tmp_path, child_argv, rules=None, capture_content=False,
+                 **run_kwargs):
         self.log = ChainLog(str(tmp_path / "proxy.chain.jsonl"), capture_content=capture_content)
         c2p_r, c2p_w = os.pipe()
         p2c_r, p2c_w = os.pipe()
@@ -73,10 +76,18 @@ class _ProxySession:
         self.client_w = os.fdopen(c2p_w, "wb")
         self.client_r = os.fdopen(p2c_r, "rb")
         self._rc: dict = {}
-        self._thread = threading.Thread(
-            target=lambda: self._rc.setdefault("rc", run_proxy(child_argv, self.log, rules)),
-            daemon=True,
-        )
+
+        def _run() -> None:
+            try:
+                self._rc["rc"] = run_proxy(child_argv, self.log, rules, **run_kwargs)
+            except BaseException as exc:
+                # Keep the exception for recv_line/close and close the proxy
+                # side of the client pipe, so a raise inside run_proxy fails
+                # the test instead of hanging it on a read that never ends.
+                self._rc["exc"] = exc
+                stdout_buf.close()
+
+        self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
 
     def send(self, payload: bytes) -> None:
@@ -87,8 +98,14 @@ class _ProxySession:
         self.client_w.write(b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload)
         self.client_w.flush()
 
+    def _reraise(self) -> None:
+        """Surface an exception from the proxy thread as the test failure."""
+        if "exc" in self._rc:
+            raise self._rc["exc"]
+
     def recv_line(self) -> dict:
         line = self.client_r.readline()
+        self._reraise()
         assert line, "EOF waiting for proxy response"
         return json.loads(line.decode())
 
@@ -96,6 +113,7 @@ class _ProxySession:
         length = None
         while True:
             line = self.client_r.readline()
+            self._reraise()
             assert line, "EOF waiting for framed proxy response"
             if line in (b"\r\n", b"\n"):
                 break
@@ -107,6 +125,7 @@ class _ProxySession:
     def close(self) -> int:
         self.client_w.close()  # EOF to proxy stdin -> proxy closes child stdin
         self._thread.join(timeout=15)
+        self._reraise()
         assert not self._thread.is_alive(), "run_proxy did not terminate"
         return self._rc["rc"]
 
@@ -525,3 +544,123 @@ def test_client_nan_argument_is_refused_not_a_crash(monkeypatch, tmp_path):
     assert sess.recv_line()["id"] == 10
     sess.close()
     assert [r["status"] for r in sess.log] == ["ok"]
+
+
+# ---------------------------------------------------------------- identity
+
+
+def _researcher_rule():
+    """A rule keyed on agent.name. Before run_proxy could be told who it was
+    recording, every proxy event said mcp-proxy and this could never fire."""
+    return [Rule(id="team-007", title="Researcher may not write files", severity="medium",
+                 match={"type": "tool_call", "agent.name": "researcher",
+                        "tool.name_regex": "(?i)(write|edit|delete)"},
+                 action="block")]
+
+
+# Answers the first tools/call and swallows every later one, so one session
+# yields both an answered call and an orphaned one.
+CHILD_ANSWERS_ONCE = (
+    "import sys, json\n"
+    "answered = False\n"
+    "for line in sys.stdin:\n"
+    "    line = line.strip()\n"
+    "    if not line:\n"
+    "        continue\n"
+    "    req = json.loads(line)\n"
+    "    if req.get('method') != 'tools/call' or answered:\n"
+    "        continue\n"
+    "    answered = True\n"
+    "    sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': req.get('id'), 'result': {}}) + '\\n')\n"
+    "    sys.stdout.flush()\n"
+)
+
+
+def test_run_proxy_defaults_unchanged(monkeypatch, tmp_path):
+    """No kwargs gives the identity every existing journal and fixture expects."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON])
+    sess.send(_call(1, "read_file"))
+    sess.recv_line()
+    assert sess.close() == 0
+    (rec,) = list(sess.log)
+    assert rec["agent"]["name"] == "mcp-proxy"
+    assert rec["agent"]["framework"] == "mcp"
+    assert re.fullmatch(r"[0-9a-f]{32}", rec["session_id"])
+
+
+def test_run_proxy_identity_kwargs_land_on_every_event(monkeypatch, tmp_path):
+    """Allowed, blocked and orphaned calls are all built from the same identity."""
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_ANSWERS_ONCE],
+                         rules=_blocking_rule(), session_id="run-4821",
+                         agent_name="researcher", framework="crewai")
+    sess.send(_call(1, "read_file"))
+    assert "result" in sess.recv_line()
+    sess.send(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                          "params": {"name": "shell", "arguments": {"cmd": "rm -rf /"}}}).encode())
+    assert sess.recv_line()["error"]["code"] == -32000
+    sess.send(_call(3, "read_file"))  # the child swallows this one
+    sess.close()
+    recs = list(sess.log)
+    assert sorted(r["status"] for r in recs) == ["blocked", "error", "ok"]
+    orphan = next(r for r in recs if r["status"] == "error")
+    assert "no response" in orphan["meta"]["error"]
+    for rec in recs:
+        assert rec["session_id"] == "run-4821"
+        assert rec["agent"]["name"] == "researcher"
+        assert rec["agent"]["framework"] == "crewai"
+    assert verify(sess.log.path).ok
+
+
+def test_agent_name_rule_blocks_only_the_named_agent(monkeypatch, tmp_path):
+    """A rule keyed on agent.name fires for the named agent and for nobody else.
+
+    CHILD_EXEC_LOG is the ground truth for whether the child ran the call.
+    """
+    exec_log = tmp_path / "executed.jsonl"
+    exec_log.touch()
+    monkeypatch.setenv("CHILD_EXEC_LOG", str(exec_log))
+    write = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "write_file", "arguments": {"path": "/tmp/x"}}}).encode()
+
+    sess = _ProxySession(monkeypatch, tmp_path / "named", [sys.executable, "-c", CHILD_SILENT_RECORDER],
+                         rules=_researcher_rule(), agent_name="researcher")
+    sess.send(write)
+    assert sess.recv_line()["error"]["message"] == "blocked by aileron rule team-007"
+    sess.close()
+    assert exec_log.read_text() == "", "a blocked call reached the child"
+    assert [r["status"] for r in sess.log] == ["blocked"]
+
+    sess = _ProxySession(monkeypatch, tmp_path / "default", [sys.executable, "-c", CHILD_SILENT_RECORDER],
+                         rules=_researcher_rule())
+    sess.send(write)
+    sess.close()
+    assert exec_log.read_text().split() == ["1"]
+    assert [r["status"] for r in sess.log] == ["error"]  # ran; the child never answers
+
+
+def test_stable_session_id_across_runs(monkeypatch, tmp_path):
+    """Reusing a session id is how a harness groups restarts into one session."""
+    for i in (1, 2):
+        sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
+                             session_id="run-4821")
+        sess.send(_call(i, "read_file"))
+        sess.recv_line()
+        assert sess.close() == 0
+    recs = ChainLog.read(sess.log.path)
+    assert [r["seq"] for r in recs] == [1, 2]
+    assert {r["session_id"] for r in recs} == {"run-4821"}
+    assert verify(sess.log.path).ok
+
+
+def test_free_form_session_id_exports_to_otlp(monkeypatch, tmp_path):
+    """A dashed uuid, the kind a harness already has, survives the OTLP export."""
+    dashed = "6f1c2a3e-9d2b-4c7e-8a1f-0b3d5e7f9a1c"
+    sess = _ProxySession(monkeypatch, tmp_path, [sys.executable, "-c", CHILD_NDJSON],
+                         session_id=dashed)
+    sess.send(_call(1, "read_file"))
+    sess.recv_line()
+    assert sess.close() == 0
+    (span,) = to_otlp_spans(list(sess.log))
+    assert re.fullmatch(r"[0-9a-f]{32}", span["traceId"])
+    attrs = {kv["key"]: kv["value"] for kv in span["attributes"]}
+    assert attrs["aileron.session_id"] == {"stringValue": dashed}

@@ -7,6 +7,7 @@ report, export, serve, detect, rules test, proxy, demo.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from aileron import __version__
 DEFAULT_LOG = "aileron.chain.jsonl"
 DEFAULT_KEY = "aileron_ed25519.key"
 DEFAULT_PUB = "aileron_ed25519.pub"
+# Bound on --agent, --framework and --session-id and their AILERON_* fallbacks.
+IDENTITY_MAX_CHARS = 128
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -71,7 +74,12 @@ def _build_parser() -> argparse.ArgumentParser:
     rt.add_argument("rules_path", help="rule file or directory")
     rt.add_argument("log", help="path to chain JSONL log")
 
-    p = sub.add_parser("proxy", help="run an MCP stdio proxy around a command")
+    p = sub.add_parser(
+        "proxy",
+        help="run an MCP stdio proxy around a command",
+        description="run an MCP stdio proxy around a command. All proxy flags go "
+                    "before '--'; anything after it belongs to the child.",
+    )
     p.add_argument("--log", required=True, help="path to chain JSONL log")
     p.add_argument("--rules", default=None, help="rules file or directory")
     p.add_argument(
@@ -79,6 +87,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="record tool arguments/results (default: digests only)",
     )
+    p.add_argument("--agent", metavar="NAME", default=None,
+                   help="recorded as agent.name on every event (env AILERON_AGENT; default: mcp-proxy)")
+    p.add_argument("--framework", metavar="NAME", default=None,
+                   help="recorded as agent.framework on every event (env AILERON_FRAMEWORK; default: mcp)")
+    p.add_argument("--session-id", metavar="ID", default=None,
+                   help="recorded as session_id on every event; any string, reuse it to group runs "
+                        "(env AILERON_SESSION_ID; default: a fresh uuid4 hex per run)")
     p.add_argument("cmd", nargs=argparse.REMAINDER, help="-- <cmd...>")
 
     p = sub.add_parser("demo", help="run a scripted fake-agent session")
@@ -306,9 +321,34 @@ def _cmd_rules_test(args: argparse.Namespace) -> int:
     return 0
 
 
+# Identity values repeat on every event for the life of a journal and rules
+# compare them by exact equality, so a trailing space or a zero-width character
+# would make `agent.name: ci-bot` miss silently. This is a hygiene gate at the
+# CLI only: run_proxy and validate() accept any string.
+def _identity_value(flag_value: str | None, env_name: str, default: str | None, flag: str) -> str | None:
+    """Resolve one identity value: flag, then environment, then default.
+
+    An environment value that is empty or whitespace counts as unset. The
+    chosen value must be 1 to 128 printable characters with no leading or
+    trailing whitespace; the ValueError names where the value came from.
+    """
+    source, value = flag, flag_value
+    if value is None:
+        env_value = os.environ.get(env_name)
+        source, value = env_name, (env_value if env_value and env_value.strip() else None)
+    if value is None:
+        return default
+    if not value or value != value.strip() or not value.isprintable() or len(value) > IDENTITY_MAX_CHARS:
+        raise ValueError(
+            f"{source}: must be 1 to {IDENTITY_MAX_CHARS} printable characters "
+            "with no leading or trailing whitespace"
+        )
+    return value
+
+
 def _cmd_proxy(args: argparse.Namespace) -> int:
     from .chainlog import ChainLog
-    from .proxy import run_proxy
+    from .proxy import DEFAULT_AGENT_NAME, DEFAULT_FRAMEWORK, run_proxy
 
     cmd = list(args.cmd)
     if cmd and cmd[0] == "--":
@@ -316,13 +356,19 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
     if not cmd:
         print("error: proxy requires a child command after '--'", file=sys.stderr)
         return 1
+    # Resolved before rules load, before the journal is opened and before the
+    # child starts, so a bad value leaves nothing behind. main() turns the
+    # ValueError into `error: ...` and exit 1.
+    agent = _identity_value(args.agent, "AILERON_AGENT", DEFAULT_AGENT_NAME, "--agent")
+    framework = _identity_value(args.framework, "AILERON_FRAMEWORK", DEFAULT_FRAMEWORK, "--framework")
+    session_id = _identity_value(args.session_id, "AILERON_SESSION_ID", None, "--session-id")
     rules = None
     if args.rules:
         from .policy import load_rules
 
         rules = load_rules(args.rules)
     log = ChainLog(args.log, capture_content=args.capture_content)
-    return run_proxy(cmd, log, rules)
+    return run_proxy(cmd, log, rules, session_id=session_id, agent_name=agent, framework=framework)
 
 
 def _load_demo_rules():

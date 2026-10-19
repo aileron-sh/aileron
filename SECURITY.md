@@ -92,6 +92,11 @@ a reportable vulnerability.
   tool calls rather than letting them run unrecorded. A peer can therefore
   deny mediation (by crashing the proxy), but cannot obtain unlogged
   execution through it.
+- **Identity fields are labels.** `--agent`, `--framework`, `--session-id`
+  and their `AILERON_*` equivalents record what the operator or harness
+  asserted; nothing authenticates them. A journal that says `agent.name:
+  ci-bot` proves the proxy was started with that label, not who was on the
+  other end.
 - **SDK instrumentation is cooperative.** `@track` records the code paths
   you decorate. Agent code - or an attacker controlling it - can simply not
   call the wrapped function. This is inherent to in-process SDKs; the MCP

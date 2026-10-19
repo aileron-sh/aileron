@@ -285,3 +285,127 @@ def test_version_matches_pyproject():
     """The two places the version is written must agree, or releases drift."""
     text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     assert f'version = "{__version__}"' in text
+
+
+# ------------------------------------------------------------------- proxy
+
+
+IDENTITY_ENV = ("AILERON_AGENT", "AILERON_FRAMEWORK", "AILERON_SESSION_ID")
+
+
+@pytest.fixture
+def proxy_stub(monkeypatch):
+    """Stand in for run_proxy: records what the CLI resolved and starts no child.
+
+    _cmd_proxy imports run_proxy lazily, so patching the module attribute is
+    enough. The identity variables are cleared first so the developer's shell
+    cannot leak into these tests.
+    """
+    import aileron.proxy as proxy_module
+
+    for name in IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    calls: list[dict] = []
+
+    def stub(child_argv, log, rules=None, **kwargs):
+        calls.append({"child_argv": list(child_argv), "rules": rules, **kwargs})
+        return 0
+
+    monkeypatch.setattr(proxy_module, "run_proxy", stub)
+    return calls
+
+
+def test_proxy_identity_flags_reach_run_proxy(tmp_path, proxy_stub):
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--agent", "researcher",
+                 "--framework", "crewai", "--session-id", "run-4821", "--", "child", "arg"]) == 0
+    assert proxy_stub == [{"child_argv": ["child", "arg"], "rules": None, "session_id": "run-4821",
+                           "agent_name": "researcher", "framework": "crewai"}]
+
+
+def test_proxy_identity_env_fallback(tmp_path, proxy_stub, monkeypatch):
+    monkeypatch.setenv("AILERON_AGENT", "env-agent")
+    monkeypatch.setenv("AILERON_FRAMEWORK", "env-framework")
+    monkeypatch.setenv("AILERON_SESSION_ID", "env-session")
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--", "child"]) == 0
+    (call,) = proxy_stub
+    assert call["agent_name"] == "env-agent"
+    assert call["framework"] == "env-framework"
+    assert call["session_id"] == "env-session"
+
+
+def test_proxy_identity_flag_beats_env(tmp_path, proxy_stub, monkeypatch):
+    monkeypatch.setenv("AILERON_AGENT", "env-agent")
+    monkeypatch.setenv("AILERON_FRAMEWORK", "env-framework")
+    monkeypatch.setenv("AILERON_SESSION_ID", "env-session")
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--agent", "flag-agent",
+                 "--framework", "flag-framework", "--session-id", "flag-session", "--", "child"]) == 0
+    (call,) = proxy_stub
+    assert call["agent_name"] == "flag-agent"
+    assert call["framework"] == "flag-framework"
+    assert call["session_id"] == "flag-session"
+
+
+def test_proxy_identity_defaults_when_nothing_set(tmp_path, proxy_stub):
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--", "child"]) == 0
+    (call,) = proxy_stub
+    assert call["session_id"] is None
+    assert call["agent_name"] == "mcp-proxy"
+    assert call["framework"] == "mcp"
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_proxy_identity_empty_env_is_unset(tmp_path, proxy_stub, monkeypatch, value):
+    """Harness templates leave variables empty; that means unset, not an error."""
+    for name in IDENTITY_ENV:
+        monkeypatch.setenv(name, value)
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--", "child"]) == 0
+    (call,) = proxy_stub
+    assert (call["agent_name"], call["framework"], call["session_id"]) == ("mcp-proxy", "mcp", None)
+
+
+BAD_IDENTITY = ["", " x", "x ", "a\nb", "a\x1b[31m", "a​b", "\xa0x", "x" * 129]
+# An empty environment value is unset rather than bad (see the test above), so
+# the env route leaves it out.
+BAD_IDENTITY_CASES = [("flag", v) for v in BAD_IDENTITY] + [("env", v) for v in BAD_IDENTITY if v]
+
+
+@pytest.mark.parametrize(("via", "value"), BAD_IDENTITY_CASES)
+def test_proxy_identity_rejects_bad_values(tmp_path, proxy_stub, monkeypatch, capsys, via, value):
+    """A bad identity exits 1 before a journal is opened or a child is started."""
+    log = tmp_path / "run.jsonl"
+    argv = ["proxy", "--log", str(log)]
+    if via == "flag":
+        argv += ["--agent", value]
+    else:
+        monkeypatch.setenv("AILERON_AGENT", value)
+    assert main([*argv, "--", "child"]) == 1
+    err = capsys.readouterr().err
+    assert ("error: --agent:" if via == "flag" else "error: AILERON_AGENT:") in err
+    assert "1 to 128 printable characters" in err
+    assert not log.exists()
+    assert proxy_stub == []
+
+
+def test_proxy_identity_checked_before_rules(tmp_path, proxy_stub, capsys):
+    """Identity is resolved before rules load, so the identity error is the one reported."""
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--rules", str(tmp_path / "no-such-rules"),
+                 "--agent", " x", "--", "child"]) == 1
+    err = capsys.readouterr().err
+    assert "error: --agent:" in err
+    assert "no-such-rules" not in err
+    assert proxy_stub == []
+
+
+@pytest.mark.parametrize("session_id", ["run-2026-10-19-07", "6f1c2a3e-9d2b-4c7e-8a1f-0b3d5e7f9a1c"])
+def test_proxy_session_id_accepts_non_hex(tmp_path, proxy_stub, session_id):
+    """A session id is any label that passes the identity rule, not a hex uuid."""
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--session-id", session_id, "--", "child"]) == 0
+    assert proxy_stub[0]["session_id"] == session_id
+
+
+def test_proxy_flags_after_double_dash_go_to_child(tmp_path, proxy_stub):
+    """Everything after '--' belongs to the child, identity flags included."""
+    assert main(["proxy", "--log", str(tmp_path / "run.jsonl"), "--", "child", "--agent", "x"]) == 0
+    (call,) = proxy_stub
+    assert call["child_argv"] == ["child", "--agent", "x"]
+    assert call["agent_name"] == "mcp-proxy"

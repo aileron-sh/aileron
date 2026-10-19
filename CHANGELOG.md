@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once 1.0 is reached; 0.x releases may change APIs between minor versions.
 
+## [Unreleased]
+
+### Added
+
+- **`aileron proxy` can say who it is recording.** New `--agent`, `--framework`
+  and `--session-id` flags, with `AILERON_AGENT`, `AILERON_FRAMEWORK` and
+  `AILERON_SESSION_ID` as fallbacks so a harness can set them per spawn (a flag
+  wins over the environment). Until now every proxy journal said the agent was
+  `mcp-proxy`, so a rule such as `agent.name: researcher` could never fire on the
+  proxy path and two agents sharing one journal were indistinguishable. Defaults
+  are unchanged (`mcp-proxy`, `mcp`, a fresh session id per run). Values are
+  checked at the CLI before a journal is opened or a child is started: 1 to 128
+  printable characters with no surrounding whitespace. A session id can be any
+  such string, so Claude Code ids, CI run ids and pod names work as they are.
+  `run_proxy` gains the same three keyword arguments.
+
 ## [0.1.6] - 2026-10-19
 
 **Security release.** An MCP server that answered with a value the journal
