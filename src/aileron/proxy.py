@@ -42,6 +42,12 @@ CHILD_EXIT_TIMEOUT = 5.0
 _UNPARSEABLE = object()
 
 
+def _reject_constant(token: str) -> Any:
+    """json.loads hook: NaN/Infinity are not JSON and cannot be canonicalized,
+    so a message carrying one is unparseable rather than half-recordable."""
+    raise ValueError(f"non-JSON constant {token!r}")
+
+
 def _canonical_wire(msg: Any) -> bytes:
     """Re-serialize a parsed JSON-RPC message to compact, newline-free bytes.
 
@@ -372,12 +378,32 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                     msg = None
                 if _is_response(msg):
                     with lock:
-                        info = pending.pop(msg.get("id"), None)
+                        info = pending.get(msg.get("id"))
                     if info is not None:
-                        ev = _apply_response(
-                            info["event"], msg, info["started"],
-                            getattr(log, "capture_content", False),
-                        )
+                        try:
+                            ev = _apply_response(
+                                info["event"], msg, info["started"],
+                                getattr(log, "capture_content", False),
+                            )
+                        except Exception as exc:
+                            # The child answered with something we cannot
+                            # canonicalize (NaN, Infinity, ...). The call still
+                            # ran, so it must still be journaled: as an error,
+                            # never as nothing.
+                            ev = info["event"]
+                            ev["status"] = "error"
+                            ev["latency_ms"] = (time.perf_counter() - info["started"]) * 1000.0
+                            ev["meta"] = {
+                                **ev.get("meta", {}),
+                                "error": f"response could not be recorded: {type(exc).__name__}",
+                            }
+                        with lock:
+                            # Forget the in-flight call only now that its record
+                            # exists, and only if the slot is still ours: a client
+                            # that reused the id meanwhile has a newer call there
+                            # that must stay pending.
+                            if pending.get(msg.get("id")) is info:
+                                del pending[msg.get("id")]
                         try:
                             append(ev)
                         except Exception as exc:
@@ -420,7 +446,7 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 break
             payload, wire = got
             try:
-                msg = json.loads(payload)
+                msg = json.loads(payload, parse_constant=_reject_constant)
             except Exception:
                 # Fail closed. If we cannot parse it we cannot police it, and
                 # the child's parser may well accept what ours rejected - that
@@ -536,4 +562,9 @@ def run_proxy(child_argv: list[str], log: Any, rules: list | None = None) -> int
                 "error": "no response from MCP server before proxy shutdown",
             }
             append(ev)  # lock-guarded: reader thread may still be writing
+    if record_failed.is_set() and returncode == 0:
+        # The child may have exited cleanly, but the record of the session is
+        # incomplete. An orchestrator must be able to see that without
+        # scraping stderr.
+        return 1
     return returncode

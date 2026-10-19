@@ -56,7 +56,7 @@ def default_log() -> ChainLog:
 def _jsonable(obj: Any) -> Any:
     """Return obj if JSON-serializable, else its repr (so digests never fail)."""
     try:
-        json.dumps(obj)
+        json.dumps(obj, allow_nan=False)
         return obj
     except (TypeError, ValueError):
         return repr(obj)
@@ -224,7 +224,8 @@ def track(
                 call = begin(args, kwargs)
                 try:
                     result = await fn(*args, **kwargs)
-                except Exception as exc:
+                except BaseException as exc:
+                    # CancelledError included: a cancelled call was still attempted.
                     finish_error(call, exc)
                     raise
                 finish_ok(call, result)
