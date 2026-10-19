@@ -1,10 +1,14 @@
 import json
 import sys
+import threading
+import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aileron.chainlog import ChainLog, VerifyResult, verify
+from aileron.chainlog import ChainLog, VerifyResult, exclusive_lock, verify
 from aileron.events import new_event, validate
 
 
@@ -256,3 +260,99 @@ def test_bool_seq_is_rejected_and_is_not_first_bad_seq(tmp_path):
     assert result.ok is False
     assert result.first_bad_seq is None
     assert result.errors == ["seq discontinuity at line 1: expected 1, got True"]
+
+
+# ------------------------------------------------------------ exclusive_lock
+
+
+def _hold(path: str, timeout: float = 5.0):
+    """Hold the lock on ``path`` in a background thread until the returned event is set."""
+    held, release = threading.Event(), threading.Event()
+
+    def run() -> None:
+        with exclusive_lock(path, timeout):
+            held.set()
+            release.wait(timeout)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert held.wait(timeout), "holder never acquired the lock"
+    return release, thread
+
+
+def test_exclusive_lock_serialises_two_holders(tmp_path):
+    path = str(tmp_path / "c.jsonl")
+    release, holder = _hold(path)
+    order: list[str] = []
+
+    def second() -> None:
+        with exclusive_lock(path, 5.0):
+            order.append("second")
+
+    waiter = threading.Thread(target=second, daemon=True)
+    waiter.start()
+    waiter.join(timeout=0.3)
+    assert waiter.is_alive() and order == []  # still queued behind the holder
+    release.set()
+    holder.join(5)
+    waiter.join(5)
+    assert order == ["second"]
+    assert not waiter.is_alive()
+
+
+def test_exclusive_lock_times_out(tmp_path):
+    path = str(tmp_path / "c.jsonl")
+    release, holder = _hold(path)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"lock .*c\.jsonl\.lock held by another writer for 0\.2s"), \
+            exclusive_lock(path, 0.2):
+        pass
+    assert 0.2 <= time.monotonic() - started < 3.0
+    release.set()
+    holder.join(5)
+
+
+def test_exclusive_lock_released_on_exception(tmp_path):
+    path = str(tmp_path / "c.jsonl")
+    with pytest.raises(RuntimeError), exclusive_lock(path, 1.0):
+        raise RuntimeError("inside the block")
+    with exclusive_lock(path, 0.2):  # acquires at once: the earlier holder let go
+        pass
+
+
+def test_exclusive_lock_does_not_touch_journal_bytes(tmp_path):
+    path = tmp_path / "c.jsonl"
+    log = ChainLog(str(path))
+    log.append(make_ev(1))
+    before = path.read_bytes()
+    with exclusive_lock(str(path), 1.0):
+        assert path.read_bytes() == before
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.jsonl", "c.jsonl.lock"]
+    assert verify(str(path)).ok
+    # Locking a journal that does not exist yet creates its parent and the lock file, not the journal.
+    fresh = tmp_path / "sub" / "new.jsonl"
+    with exclusive_lock(str(fresh), 1.0):
+        pass
+    assert not fresh.exists()
+    assert (tmp_path / "sub" / "new.jsonl.lock").exists()
+
+
+def test_without_lock_two_writers_fork_the_chain(tmp_path):
+    """Two short-lived writers that each replay the tip and then append write two
+    events with the same prev_hash, and verify rejects the journal. This is why
+    the hook holds exclusive_lock around construction plus append."""
+    path = str(tmp_path / "c.jsonl")
+    first, second = ChainLog(path), ChainLog(path)  # both read the same (empty) tip
+    first.append(make_ev(1))
+    second.append(make_ev(2))
+    result = verify(path)
+    assert result.ok is False
+    assert result.first_bad_seq == 1
+    assert any("prev_hash mismatch" in e for e in result.errors)
+
+    locked = str(tmp_path / "locked.jsonl")
+    for i in (1, 2):
+        with exclusive_lock(locked, 1.0):
+            ChainLog(locked).append(make_ev(i))
+    assert verify(locked).ok

@@ -52,6 +52,7 @@ journal on disk contains only argument digests - never the raw command.
 | Policy rules | **32 bundled rules** covering credential theft, cloud metadata abuse, exfiltration, supply chain, persistence, anti-forensics, database destruction, and prompt-injection artifacts. Sigma-like YAML; substring, regex, and dotted-key matchers. Rules are evaluated against the full call **in memory**, so content rules fire even in digest-only mode |
 | Behavioral anomaly detection | Rolling baselines flag first-seen tools, rate spikes (>3x baseline), and novel tool-call sequences - live via the SDK (`baseline=`) or offline via `aileron detect` |
 | MCP stdio proxy | Sits between any MCP client and server; logs and mediates every `tools/call` before it reaches the child process. Verified against the official filesystem and memory servers, not just test doubles |
+| Claude Code hook | `aileron hook` plugs into Claude Code's PreToolUse and PostToolUse hooks: every tool call is journaled before it runs and again when it returns, a matching block rule stops it (exit 2, reason shown in the session, even in bypassPermissions mode), and a journal that cannot be written blocks the call instead of losing it. One settings.json snippet covers a project. See [docs/claude-code.md](docs/claude-code.md) |
 | MCP server mode | `aileron serve` exposes your journals read-only, so an assistant can answer "what did the agent touch?" from the record. Listed in the [official MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.aileron-sh/aileron` |
 | OTel GenAI export | Events export as `gen_ai.*`-aligned span dicts (`aileron export`) for your existing collector |
 | HTML incident reports | Single file, inline CSS, no external assets, verification badge (`VERIFIED` / `TAMPERED at seq N`) |
@@ -132,6 +133,38 @@ JSON-RPC. Content rules
 `--capture-content` changes what is persisted, not what is enforced. Calls
 still in flight when the child dies are journaled with `status=error`, so a
 crash never erases the attempt.
+
+### Claude Code: record and police every tool call
+
+Claude Code's own tools (`Bash`, `Edit`, `Write`, MCP tools) go through its
+hook system, and `aileron hook` is a command hook for it. One entry,
+registered under `PreToolUse`, `PostToolUse` and `PostToolUseFailure`; the
+`PreToolUse` copy also gets `"onFailure": "block"`:
+
+```json
+{"type": "command", "command": "aileron",
+ "args": ["hook", "--log", "${CLAUDE_PROJECT_DIR}/aileron.chain.jsonl",
+          "--rules", "${CLAUDE_PROJECT_DIR}/rules"],
+ "timeout": 30}
+```
+
+Every call is journaled before it runs and again when it returns, digests
+only by default. A matching block rule stops the call by exit code 2 and
+Claude sees the reason in the session:
+
+```text
+PreToolUse:Bash hook error: [aileron hook ...]: blocked by aileron rule
+local-001 (Block destructive shell commands from Claude Code); recorded as
+seq 3 in /home/me/my-project/aileron.chain.jsonl
+```
+
+The hook fails closed: a journal that cannot be written or rules that cannot
+be loaded block the call rather than let it run unrecorded, and it never
+writes to stdout or emits an `allow`, so it can only narrow what Claude Code
+would have permitted. Hook processes run in parallel and serialise on
+`<log>.lock`. `aileron verify` and `aileron report` work on the journal as on
+any other. Full setup, the event shapes and the limits (what a timed-out hook
+means, `@` file reads, mods) are in [docs/claude-code.md](docs/claude-code.md).
 
 ### MCP server: ask your assistant what the agent did
 
@@ -352,6 +385,10 @@ reporting a regression that is not there.
   library alone when LiveKit is not installed.
 - **MCP** - the proxy wraps any stdio MCP server regardless of which client
   or framework drives it.
+- **Claude Code** - `aileron hook` records and polices Claude Code's own tools
+  (Bash, Edit, Write, MCP tools) through its hook system; no SDK, no proxy, no
+  network, no change to how Claude Code is launched. See
+  [docs/claude-code.md](docs/claude-code.md).
 - **Community rules** - rule contributions are the intended contribution
   unit (see Roadmap).
 
@@ -385,6 +422,14 @@ reporting a regression that is not there.
   whole log and forge it forward. Signed checkpoints make forgery require
   the private key - keep keys off the host being recorded, and anchor
   checkpoints externally (see Roadmap) if you need non-repudiation.
+- **The Claude Code hook is as strong as Claude Code's hook contract.** It
+  blocks by exit code 2, which Claude Code honours in every permission mode,
+  but a timed-out or crashed hook fails open unless `onFailure:
+  "block"` is set (Claude Code 2.1.295 or later), files pulled in with `@`
+  never fire a tool hook, a mod handling `tool.check` can override a hook
+  that is not in managed settings, hooks do not run until the workspace trust
+  dialog is accepted, and the hook runs as the same OS user as the agent, so
+  it makes journal deletion and hook removal evident rather than impossible.
 
 ## Roadmap
 

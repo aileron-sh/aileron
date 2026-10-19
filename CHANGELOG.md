@@ -21,6 +21,25 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   printable characters with no surrounding whitespace. A session id can be any
   such string, so Claude Code ids, CI run ids and pod names work as they are.
   `run_proxy` gains the same three keyword arguments.
+- **Claude Code hook adapter.** `aileron hook` is a PreToolUse, PostToolUse and
+  PostToolUseFailure command hook. It reads the hook payload from stdin,
+  journals the call as a chained `tool_call` event (`meta.transport:
+  claude-code-hook`, Claude Code's session id as `session_id`, pre and post
+  events joined by `meta.hook.tool_use_id`), runs the policy engine, and blocks
+  by exiting 2 with the rule id on stderr, which Claude Code honours in every
+  permission mode. It never writes to stdout and never emits an `allow`, so it
+  can only narrow what Claude Code would have permitted. It fails closed: a
+  journal that cannot be written, rules that cannot be loaded or yield none,
+  and input that is malformed, oversized or carries duplicate keys all end in
+  exit 2 with the reason, and a call is never released before its record is on
+  disk. Claude
+  Code runs hooks in parallel, so hook processes serialise on `<log>.lock`;
+  without that two simultaneous tool calls could fork the chain. One
+  settings.json block covers a project; see `docs/claude-code.md`.
+- **`chainlog.exclusive_lock(path, timeout)`** for short-lived writers that
+  share one journal: an advisory lock on `<path>.lock` held around tip replay
+  and append, `TimeoutError` after `timeout` seconds. The proxy and SDK are
+  single-writer and unchanged.
 
 ## [0.1.6] - 2026-10-19
 
