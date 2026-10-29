@@ -115,25 +115,35 @@ class ChainLog:
         and appendable after a crash. ``verify`` is the integrity authority
         and still flags such a line; readers here are best-effort.
         """
-        with open(self.path, "rb") as fh:
-            for raw_line in fh:
-                try:
-                    line = raw_line.decode("utf-8").strip()
-                except UnicodeDecodeError:
-                    continue
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except (ValueError, RecursionError):
-                    continue
-                if isinstance(obj, dict):
-                    yield obj
+        return _iter_events(self.path)
 
     @classmethod
     def read(cls, path: str) -> list[dict]:
-        """Read all events from the log at ``path`` as a list of dicts."""
-        return list(cls(path))
+        """Read all events from the log at ``path`` as a list of dicts.
+
+        Read-only: unlike constructing a ChainLog, it never creates the journal
+        or its directory, so reading a journal that was deleted cannot quietly
+        recreate it as an empty one. A missing journal raises FileNotFoundError.
+        """
+        return list(_iter_events(str(path)))
+
+
+def _iter_events(path: str) -> Iterator[dict]:
+    """The lenient reader behind ``ChainLog.__iter__`` and ``ChainLog.read``."""
+    with open(path, "rb") as fh:
+        for raw_line in fh:
+            try:
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                yield obj
 
 
 def _try_lock(fd: int) -> bool:

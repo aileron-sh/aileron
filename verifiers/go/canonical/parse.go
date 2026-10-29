@@ -7,11 +7,14 @@ import (
 	"unicode/utf8"
 )
 
-// MaxDepth is the nesting depth beyond which Parse refuses a document. CPython
-// raises RecursionError somewhere past a few thousand levels (the exact point
-// depends on the interpreter version and how deep the stack already is), and
-// its encoder has the same limit, so no journal Python wrote can be deeper
-// than that. The bound here exists so hostile input cannot exhaust the stack.
+// MaxDepth is the nesting depth beyond which Parse refuses a document. The
+// bound exists so hostile input cannot exhaust the stack.
+//
+// It does not cover everything CPython can write. CPython 3.11 reads about 990
+// levels, while 3.14 and later can write about 104,600, so a journal recorded
+// with content capture on can verify differently across Python versions and
+// here. SPEC.md does not pin a depth yet; until it does, this limit is a
+// safety bound, not an agreement guarantee.
 const MaxDepth = 10000
 
 // MaxIntDigits mirrors CPython's default sys.int_max_str_digits: an integer

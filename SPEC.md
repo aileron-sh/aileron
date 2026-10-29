@@ -506,6 +506,17 @@ hook               0  recorded (and, on PreToolUse, allowed); nothing printed
                       reason on stderr (never 1)
 ```
 
+A journal, checkpoints file or key that the command needs and that exists but
+cannot be read (a directory, no read permission, an I/O error part way through)
+is an operational error: exit 1 with an `error:` line, never `OK`, `TAMPERED` or
+`FAILED`, because nothing was checked. A missing journal is a verdict instead,
+`TAMPERED at seq None` with exit 2, because deleting the evidence is tampering.
+Missing means what Python's `os.path.exists` says, so a journal in a directory
+the verifier may not search counts as missing. A checkpoints file counts as
+absent only when it does not exist; any other failure to open it is an
+operational error, so the cross-check cannot be skipped by making the file
+unreadable. Treat any non-zero exit as a journal that cannot be trusted.
+
 Each problem found is printed first as its own `error: <message>` line on
 stderr. The message texts above are normative where they are quoted in full;
 the exception text that follows `invalid JSON:`, `invalid UTF-8:` and
@@ -521,12 +532,16 @@ output is deterministic so the committed fixtures can be checked against the
 current library. `tests/test_conformance.py` replays everything through Python
 and, when `go` is on PATH, through the Go binary; `verifiers/go` has its own
 tests that do the same from the Go side, run by
-`.github/workflows/go-verifier.yml`.
+`.github/workflows/go-verifier.yml`. The Go side also has native fuzz targets,
+`FuzzParse` and `FuzzVerify`, whose seed corpora run as ordinary tests;
+`verifiers/go/canonical/fuzz_test.go` says how to fuzz for longer.
 
 Two limits of the reference are deliberately not pinned. CPython's recursion
 limit for nested JSON depends on the interpreter version, so the depth at which
-a hostile line stops parsing varies; the Go verifier refuses more than 10000
-levels. And Python versions word some parse errors differently, which is why
+a line stops parsing varies. The Go verifier refuses more than 10000 levels,
+and a genuine journal recorded with content capture on CPython 3.14 or later
+can be deeper than that, so the two can disagree on such a journal until one
+depth is pinned. And Python versions word some parse errors differently, which is why
 only the verdict, exit code, `first_bad_seq` and the fixed message prefixes are
 compared.
 
