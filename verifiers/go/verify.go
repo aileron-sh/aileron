@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/big"
 	"os"
 	"unicode/utf8"
@@ -50,18 +51,60 @@ func EventHash(event *canonical.Value) (string, error) {
 
 // Verify checks the journal at path: seq continuity from 1, prev_hash links
 // from the genesis value, and every hash recomputed from the stored bytes.
-// It never fails with an error on the journal's contents; whatever the file
-// holds, the answer is a verdict.
-func Verify(path string) VerifyResult {
-	f, err := os.Open(path)
+//
+// Whatever the file holds, the answer is a verdict: its contents never cause
+// an error. A journal that cannot be found is a verdict too, not OK with count
+// 0, as the reference reports it (see exists for what counts as not found).
+//
+// The error is for a journal that exists but cannot be read to the end: a
+// directory, a file without read permission, an I/O failure part way through.
+// That says nothing about the journal, so it is never reported as intact or as
+// tampered: the result is then the zero VerifyResult and carries no verdict.
+// The Python CLI exits 1 in these cases, which is what Run does with the error.
+func Verify(path string) (VerifyResult, error) {
+	if !exists(path) {
+		return VerifyResult{Errors: []string{"log file not found: " + path}}, nil
+	}
+	f, err := openForReading(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return VerifyResult{Errors: []string{"log file not found: " + path}}
-		}
-		return VerifyResult{Errors: []string{"cannot read log file: " + err.Error()}}
+		return VerifyResult{}, err
 	}
 	defer f.Close()
 	return verifyReader(f)
+}
+
+// exists is Python's os.path.exists: false for any path that cannot be
+// stat'ed, not only for one that is missing. The reference decides "log file
+// not found" this way, so a journal in a directory the verifier may not search
+// counts as missing in both verifiers, which for verify is TAMPERED. The
+// checkpoints file is held to a stricter rule; see ReadCheckpoints.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// errIsDirectory reports a journal or checkpoints path that names a directory.
+var errIsDirectory = errors.New("is a directory")
+
+// openForReading opens path for reading and refuses a directory up front.
+// os.Open succeeds on a directory, and whether reading it then fails depends
+// on the platform. Python's open() refuses a directory on every platform
+// (IsADirectoryError on POSIX, PermissionError on Windows), and the Python CLI
+// turns either into exit 1.
+func openForReading(path string) (*os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err == nil && info.IsDir() {
+		err = &fs.PathError{Op: "open", Path: path, Err: errIsDirectory}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // problem is one complaint together with the seq Python would attach to it.
@@ -71,7 +114,11 @@ type problem struct {
 	msg string
 }
 
-func verifyReader(r io.Reader) VerifyResult {
+// verifyReader is Verify over the bytes of r. A read error other than io.EOF
+// ends it with that error and no verdict, wherever it happens: the lines read
+// so far say nothing about the ones that could not be read, and treating the
+// error as the end of the journal would report a truncated read as intact.
+func verifyReader(r io.Reader) (VerifyResult, error) {
 	result := VerifyResult{}
 	record := func(problems []problem) {
 		for _, p := range problems {
@@ -98,12 +145,15 @@ func verifyReader(r io.Reader) VerifyResult {
 	lineno := 0
 	for {
 		raw, readErr := reader.ReadBytes('\n')
-		if len(raw) == 0 && readErr != nil {
-			break
+		if readErr != nil && readErr != io.EOF {
+			return VerifyResult{}, readErr
+		}
+		if len(raw) == 0 {
+			break // ReadBytes returns data or an error, so this is the end
 		}
 		lineno++
 		if !utf8.Valid(raw) {
-			record([]problem{{n: expectedSeq, msg: fmt.Sprintf("line %d: invalid UTF-8: %s", lineno, utf8Error(raw))}})
+			record([]problem{{n: expectedSeq, msg: fmt.Sprintf("line %d: invalid UTF-8: %s", lineno, utf8Error(raw, 0))}})
 			expectedSeq = new(big.Int).Add(expectedSeq, big.NewInt(1))
 			broken = true
 			continue
@@ -174,25 +224,32 @@ func verifyReader(r io.Reader) VerifyResult {
 		}
 	}
 	result.OK = len(result.Errors) == 0
-	return result
+	return result, nil
 }
 
 // ReadEvents is the lenient reader, Python's ChainLog.read: every line that
 // decodes as UTF-8, is non-blank after stripping, parses as JSON and is an
 // object. Anything else is skipped, not reported; Verify is the authority on
 // integrity and this reader exists for callers that already hold a verdict.
+// A journal that cannot be opened or read to the end is an error, as it is in
+// Python: stopping early would hand back fewer events than the journal holds.
 func ReadEvents(path string) ([]*canonical.Value, error) {
-	f, err := os.Open(path)
+	f, err := openForReading(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	return readEvents(f)
+}
+
+// readEvents is ReadEvents over the bytes of r.
+func readEvents(r io.Reader) ([]*canonical.Value, error) {
 	var events []*canonical.Value
-	reader := bufio.NewReader(f)
+	reader := bufio.NewReader(r)
 	for {
 		raw, readErr := reader.ReadBytes('\n')
-		if len(raw) == 0 && readErr != nil {
-			break
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
 		}
 		if utf8.Valid(raw) {
 			if text := canonical.Strip(string(raw)); text != "" {
@@ -209,8 +266,9 @@ func ReadEvents(path string) ([]*canonical.Value, error) {
 }
 
 // utf8Error describes the first invalid byte of raw in the shape of Python's
-// UnicodeDecodeError message.
-func utf8Error(raw []byte) string {
+// UnicodeDecodeError message, counting positions from base, the offset of raw
+// in whatever was being decoded.
+func utf8Error(raw []byte, base int) string {
 	for i := 0; i < len(raw); {
 		r, size := utf8.DecodeRune(raw[i:])
 		if r == utf8.RuneError && size <= 1 {
@@ -220,7 +278,7 @@ func utf8Error(raw []byte) string {
 			} else if raw[i] >= 0xc0 && i+1 >= len(raw) {
 				reason = "unexpected end of data"
 			}
-			return fmt.Sprintf("'utf-8' codec can't decode byte 0x%02x in position %d: %s", raw[i], i, reason)
+			return fmt.Sprintf("'utf-8' codec can't decode byte 0x%02x in position %d: %s", raw[i], base+i, reason)
 		}
 		i += size
 	}

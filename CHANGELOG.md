@@ -32,14 +32,55 @@ once 1.0 is reached; 0.x releases may change APIs between minor versions.
   journal that cannot be written, rules that cannot be loaded or yield none,
   and input that is malformed, oversized or carries duplicate keys all end in
   exit 2 with the reason, and a call is never released before its record is on
-  disk. Claude
-  Code runs hooks in parallel, so hook processes serialise on `<log>.lock`;
-  without that two simultaneous tool calls could fork the chain. One
-  settings.json block covers a project; see `docs/claude-code.md`.
+  disk. Claude Code runs hooks in parallel, so hook processes serialise on
+  `<log>.lock`; without that two simultaneous tool calls could fork the chain.
+  One settings.json block covers a project; see `docs/claude-code.md`.
 - **`chainlog.exclusive_lock(path, timeout)`** for short-lived writers that
   share one journal: an advisory lock on `<path>.lock` held around tip replay
   and append, `TimeoutError` after `timeout` seconds. The proxy and SDK are
   single-writer and unchanged.
+
+### Fixed
+
+- **The Go verifier could say OK about a journal it had not fully read.**
+  `Verify` treated any read error as the end of the file. A read that failed
+  part way through therefore looked like a shorter journal that was still
+  intact, and the command line printed OK. A directory came back from the
+  library as intact with 0 events, which only the command line's own directory
+  check caught. `Verify` and `ReadEvents` now return an error for anything that
+  exists but cannot be read to the end, and `VerifyCheckpoint` returns one when
+  the journal changes between its two reads instead of indexing past the end of
+  the shorter copy. The command line reports these with exit 1. `Verify` now
+  returns `(VerifyResult, error)`; the Go module has no tagged releases.
+- **Unreadable input is an error in both verifiers, not a verdict or a
+  traceback.** Go reported a journal it could not read as `TAMPERED` with exit
+  2 from `verify` and as `FAILED` from `verify-checkpoint`. Python stopped with
+  a traceback for an unreadable journal, a directory in its place, an
+  unreadable checkpoints file, or a key it could not read. Both now print an
+  `error:` line and exit 1, the code SPEC.md reserves for operational problems,
+  whenever a file the command needs exists but cannot be read. A checkpoints
+  file now counts as absent only when it does not exist: Python used to skip
+  one it could not open, such as a symlink loop, and print OK. A missing
+  journal stays `TAMPERED` with exit 2, because deleting the evidence is
+  tampering. Any non-zero exit means the journal cannot be trusted.
+- **Reading a journal no longer creates one.** `ChainLog.read` built a writer,
+  and a writer creates a missing journal. So `aileron report`, `export`,
+  `detect` and `rules test` recreated a deleted journal as an empty file, and
+  `report` then rendered it as `VERIFIED 0 events` with exit 0. Reading is now
+  read-only, and a missing journal is an error with exit 1. Python's
+  `verify-checkpoint` also stops with an error, instead of an IndexError, when
+  the journal changes between its two reads, as the Go verifier now does.
+
+### Internal
+
+- **Fuzz targets for the Go verifier.** `FuzzParse` checks that the canonical
+  parser never panics and that anything it parses and can write comes back
+  byte for byte when parsed and written again; `FuzzVerify` feeds arbitrary bytes to the verifier as
+  one- and two-line journals and checks that the verdict, the exit code and the
+  events read all agree. Their seed corpora run under plain `go test`.
+- The Go parser's depth comment claimed no Python could write a journal deeper
+  than its 10000-level limit. CPython 3.14 and later can, so the comment now
+  says the limit is a safety bound and that a shared depth is not pinned yet.
 
 ## [0.1.6] - 2026-10-19
 
