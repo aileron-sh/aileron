@@ -116,7 +116,10 @@ func TestJournalFixtures(t *testing.T) {
 				t.Fatal(err)
 			}
 			inDir(t, dir, func() {
-				result := Verify("journal.jsonl")
+				result, err := Verify("journal.jsonl")
+				if err != nil {
+					t.Fatalf("Verify: %v", err)
+				}
 				if result.OK != want.Verify.OK || result.Count != want.Verify.Count {
 					t.Errorf("Verify: ok=%v count=%d, want ok=%v count=%d\n%s",
 						result.OK, result.Count, want.Verify.OK, want.Verify.Count, strings.Join(result.Errors, "\n"))

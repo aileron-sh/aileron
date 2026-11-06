@@ -16,7 +16,8 @@ const usage = `usage: aileron-verify <command> [options]
 
 commands:
   verify <log> [--skip-checkpoint-check]
-      Verify a hash-chained journal. Exit 0 when intact, 2 when tampered.
+      Verify a hash-chained journal. Exit 0 when intact, 2 when tampered or
+      missing, 1 when it or its checkpoints are there but cannot be read.
       An adjacent <log>.checkpoints.jsonl is cross-checked (unauthenticated)
       unless --skip-checkpoint-check is given.
   verify-checkpoint <log> [--key <public key PEM>]
@@ -30,7 +31,8 @@ commands:
 // Run executes the command line in args (without the program name), writing
 // to stdout and stderr, and returns the process exit code. It follows the
 // Python CLI: verify exits 2 on tamper, verify-checkpoint exits 1 on an
-// invalid checkpoint, and 1 is used for operational errors.
+// invalid checkpoint, and 1 is used for operational errors, among them a
+// journal or checkpoints file that is there but cannot be read.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprint(stderr, usage)
@@ -91,12 +93,19 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	logPath := positional[0]
-	if info, err := os.Stat(logPath); err == nil && info.IsDir() {
-		fmt.Fprintf(stderr, "error: %s is a directory\n", logPath)
+	result, err := Verify(logPath)
+	return reportVerify(logPath, result, err, skip, stdout, stderr)
+}
+
+// reportVerify prints what Verify said about logPath, runs the cross-check
+// against its checkpoints unless skip is set, and returns the exit code.
+func reportVerify(logPath string, result VerifyResult, err error, skip bool, stdout, stderr io.Writer) int {
+	if err != nil {
+		// The journal exists but could not be read, so there is no verdict to
+		// give: not OK, and not TAMPERED either. Python exits 1 here too.
+		fmt.Fprintf(stderr, "error: %s\n", err)
 		return 1
 	}
-
-	result := Verify(logPath)
 	if !result.OK {
 		for _, e := range result.Errors {
 			fmt.Fprintf(stderr, "error: %s\n", e)
