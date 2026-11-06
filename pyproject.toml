@@ -38,7 +38,7 @@ Security = "https://github.com/aileron-sh/aileron/blob/main/SECURITY.md"
 [project.optional-dependencies]
 # ruff is pinned to the exact version CI installs (see .github/workflows/ci.yml)
 # so a local run and the CI run always agree. Bump both together.
-dev = ["pytest", "ruff==0.16.4"]
+dev = ["pytest", "ruff==0.17.3"]
 
 [project.scripts]
 aileron = "aileron.cli:main"
