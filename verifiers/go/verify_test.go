@@ -20,7 +20,7 @@ import (
 
 // event builds a canonical journal line for one minimal event, chaining it
 // to prev. Only the fields the chain depends on are populated.
-func event(t *testing.T, seq int, prev, name string) (line, hash string) {
+func event(t testing.TB, seq int, prev, name string) (line, hash string) {
 	t.Helper()
 	src := fmt.Sprintf(`{"id":"%032x","ts":"2026-01-01T00:00:00.000Z","seq":%d,"session_id":"s",`+
 		`"agent":{"name":"a","framework":"f","version":null},"type":"tool_call",`+
@@ -43,7 +43,7 @@ func event(t *testing.T, seq int, prev, name string) (line, hash string) {
 	return string(out), hash
 }
 
-func writeChain(t *testing.T, path string, n int) (lines []string, hashes []string) {
+func writeChain(t testing.TB, path string, n int) (lines []string, hashes []string) {
 	t.Helper()
 	prev := GenesisPrevHash
 	for i := 1; i <= n; i++ {
@@ -58,27 +58,54 @@ func writeChain(t *testing.T, path string, n int) (lines []string, hashes []stri
 	return lines, hashes
 }
 
+// mustVerify is Verify for a journal that is known to be readable.
+func mustVerify(t testing.TB, path string) VerifyResult {
+	t.Helper()
+	result, err := Verify(path)
+	if err != nil {
+		t.Fatalf("Verify(%s): %v", path, err)
+	}
+	return result
+}
+
 func TestVerifyHappyPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j.jsonl")
 	writeChain(t, path, 4)
-	result := Verify(path)
+	result := mustVerify(t, path)
 	if !result.OK || result.Count != 4 || result.FirstBadSeq != nil || len(result.Errors) != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
 
+// A missing journal is a verdict, not an operational error: SPEC.md says it is
+// not ok with count 0, and the Python CLI prints exactly these two lines and
+// exits 2. Changing this would make the two verifiers disagree.
 func TestVerifyMissingFileIsTamperedAtSeqNone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nope.jsonl")
-	result := Verify(path)
-	if result.OK || result.Count != 0 || result.FirstBadSeq != nil {
+	result, err := Verify(path)
+	if err != nil {
+		t.Fatalf("a missing journal is a verdict, not an error: %v", err)
+	}
+	if result.OK || result.Count != 0 || result.FirstBadSeq != nil ||
+		len(result.Errors) != 1 || result.Errors[0] != "log file not found: "+path {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	var out, errOut bytes.Buffer
 	if code := Run([]string{"verify", path}, &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
-	if !strings.Contains(errOut.String(), "TAMPERED at seq None in ") {
-		t.Fatalf("stderr: %s", errOut.String())
+	want := "error: log file not found: " + path + "\nTAMPERED at seq None in " + path + "\n"
+	if errOut.String() != want || out.Len() != 0 {
+		t.Fatalf("stdout %q, stderr %q, want stderr %q", out.String(), errOut.String(), want)
+	}
+	// verify-checkpoint finds no checkpoints next to a missing journal, which
+	// Python reports as an invalid checkpoint, not as an error.
+	s := newSigner(t)
+	out.Reset()
+	errOut.Reset()
+	code := Run([]string{"verify-checkpoint", path, "--key", filepath.Join(s.dir, PublicKeyName)}, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "FAILED: checkpoint invalid for "+path) {
+		t.Fatalf("verify-checkpoint: exit %d, stderr %q", code, errOut.String())
 	}
 }
 
@@ -95,7 +122,7 @@ func TestVerifyBoolSeqIsRejected(t *testing.T) {
 	out, _ := canonical.Marshal(v)
 	path := filepath.Join(t.TempDir(), "j.jsonl")
 	os.WriteFile(path, []byte(string(out)+"\n"), 0o644)
-	result := Verify(path)
+	result := mustVerify(t, path)
 	want := "seq discontinuity at line 1: expected 1, got True"
 	if result.OK || result.FirstBadSeq != nil || len(result.Errors) != 1 || result.Errors[0] != want {
 		t.Fatalf("unexpected result: %+v", result)
@@ -104,7 +131,7 @@ func TestVerifyBoolSeqIsRejected(t *testing.T) {
 	// hash: its complaint is the first problem carrying an integer seq.
 	line2, _ := event(t, 2, GenesisPrevHash, "t2")
 	os.WriteFile(path, []byte(string(out)+"\n"+line2+"\n"), 0o644)
-	result = Verify(path)
+	result = mustVerify(t, path)
 	if result.OK || result.FirstBadSeq == nil || result.FirstBadSeq.Int64() != 2 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
@@ -156,7 +183,7 @@ type signer struct {
 	dir  string
 }
 
-func newSigner(t *testing.T) *signer {
+func newSigner(t testing.TB) *signer {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -172,7 +199,7 @@ func newSigner(t *testing.T) *signer {
 
 // checkpoint signs a checkpoint line. indexLiteral and countLiteral are JSON
 // source text so tests can plant odd types.
-func (s *signer) checkpoint(t *testing.T, indexLiteral, prevHash, countLiteral, tip string) (line, hash string) {
+func (s *signer) checkpoint(t testing.TB, indexLiteral, prevHash, countLiteral, tip string) (line, hash string) {
 	t.Helper()
 	src := fmt.Sprintf(`{"ts":"2026-01-01T00:00:00.000Z","log_path":"j.jsonl","index":%s,"prev_checkpoint_hash":%q,"count":%s,"tip_hash":%q}`,
 		indexLiteral, prevHash, countLiteral, tip)

@@ -1,6 +1,7 @@
 package aileron
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
@@ -8,6 +9,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -45,38 +48,67 @@ func CheckpointHash(checkpoint *canonical.Value) (string, error) {
 }
 
 // ReadCheckpoints returns every checkpoint object recorded for logPath, in
-// file order. A missing file is an empty list. Lines that are blank, not
-// JSON, or not objects are skipped, as Python's reader skips them. The file
-// is read as text, so invalid UTF-8 anywhere in it is an error rather than a
-// verdict, which is how Python behaves (UnicodeDecodeError, exit 1).
+// file order. Lines that are blank, not JSON, or not objects are skipped, as
+// Python's reader skips them.
+//
+// The file is absent, an empty list, only when opening it finds nothing there,
+// a symlink to nothing included. Anything else that stops it being opened or
+// read to the end is an error, never an empty list: a symlink loop, a symlink
+// into a directory the verifier may not search, an I/O error. Calling those
+// absent would let verify skip the cross-check and print OK beside a
+// checkpoints file in plain sight. Python's read_checkpoints follows the same
+// rule. Invalid UTF-8 anywhere in the file is an error too: Python reads it as
+// text and stops with UnicodeDecodeError, exit 1.
 func ReadCheckpoints(logPath string) ([]*canonical.Value, error) {
-	data, err := os.ReadFile(CheckpointsPath(logPath))
+	f, err := openForReading(CheckpointsPath(logPath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	if !utf8.Valid(data) {
-		return nil, errors.New(utf8Error(data))
-	}
-	// Python opens the file in text mode, which treats \r\n and a lone \r as
-	// line breaks too.
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
+	defer f.Close()
+	return readCheckpoints(f)
+}
+
+// readCheckpoints is ReadCheckpoints over the bytes of r. It works one line at
+// a time and stops at the first read error or invalid UTF-8, as Python's text
+// reader does, so a file that never ends, such as a device, is refused rather
+// than read until memory runs out.
+func readCheckpoints(r io.Reader) ([]*canonical.Value, error) {
 	var out []*canonical.Value
-	for _, line := range strings.Split(text, "\n") {
-		line = canonical.Strip(line)
-		if line == "" {
-			continue
+	reader := bufio.NewReader(r)
+	offset := 0 // of raw in the file, so the error names the same position
+	for {
+		raw, readErr := reader.ReadBytes('\n')
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
 		}
-		v, err := canonical.Parse(line)
-		if err != nil || v.Kind != canonical.Object {
-			continue
+		// No byte of a UTF-8 sequence is \n or \r, so checking and splitting
+		// one \n-terminated piece at a time finds what the whole file would.
+		if !utf8.Valid(raw) {
+			return nil, errors.New(utf8Error(raw, offset))
 		}
-		out = append(out, v)
+		offset += len(raw)
+		// Python opens the file in text mode, which treats \r\n and a lone \r
+		// as line breaks too.
+		text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+		text = strings.ReplaceAll(text, "\r", "\n")
+		for _, line := range strings.Split(text, "\n") {
+			line = canonical.Strip(line)
+			if line == "" {
+				continue
+			}
+			v, err := canonical.Parse(line)
+			if err != nil || v.Kind != canonical.Object {
+				continue
+			}
+			out = append(out, v)
+		}
+		if readErr != nil {
+			return out, nil // io.EOF
+		}
 	}
-	return out, nil
 }
 
 // usableCount reports whether a checkpoint's count is what sign_checkpoint
@@ -181,6 +213,11 @@ func LoadPublicKey(keyPath string) (ed25519.PublicKey, error) {
 	return nil, fmt.Errorf("not an ed25519 key: %s", keyPath)
 }
 
+// readJournalEvents is ReadEvents. VerifyCheckpoint reads the journal twice,
+// once through Verify and once through this, and the tests replace it to make
+// the journal change between the two reads without a timing race.
+var readJournalEvents = ReadEvents
+
 // VerifyCheckpoint verifies the checkpoints recorded for logPath against the
 // key at keyPath and reports whether the journal still honours every one of
 // them. A checkpoint covers a prefix: the chain must be intact, the journal
@@ -190,7 +227,11 @@ func LoadPublicKey(keyPath string) (ed25519.PublicKey, error) {
 // checkpoints themselves must form a gap-free chain 1..N.
 //
 // The Python function returns a bare bool and so does this one; the CLI
-// prints a one-line verdict either way.
+// prints a one-line verdict either way. The error is for a checkpoints file or
+// journal that is there but cannot be read, or a journal that shrank between
+// the two reads made of it, where Python raises: that is no verdict at all, so
+// it is not reported as an invalid checkpoint either. A key that cannot be
+// loaded is a plain false, as in Python.
 func VerifyCheckpoint(logPath, keyPath string) (bool, error) {
 	checkpoints, err := ReadCheckpoints(logPath)
 	if err != nil {
@@ -251,13 +292,24 @@ func VerifyCheckpoint(logPath, keyPath string) (bool, error) {
 		}
 	}
 
-	result := Verify(logPath)
+	result, err := Verify(logPath)
+	if err != nil {
+		return false, err
+	}
 	if !result.OK {
 		return false, nil
 	}
-	events, err := ReadEvents(logPath)
+	events, err := readJournalEvents(logPath)
 	if err != nil {
-		return false, nil
+		return false, err
+	}
+	if len(events) < result.Count {
+		// Verify and ReadEvents each read the journal, and it shrank in
+		// between: rotated, truncated, or not a regular file at all. Neither
+		// read speaks for the journal, so there is no verdict to give, and the
+		// count from the first must not index the events of the second.
+		return false, fmt.Errorf("%s changed while it was being verified (%d events, then %d)",
+			logPath, result.Count, len(events))
 	}
 	// Every valid checkpoint must still hold, not just the widest one.
 	for _, checkpoint := range valid {

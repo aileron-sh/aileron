@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -57,10 +58,102 @@ def test_verify_tamper_exit_2(tmp_path, capsys):
     assert "TAMPERED" in err
 
 
-def test_verify_missing_log_nonzero(tmp_path, capsys):
-    # SPEC: failure exits non-zero; a missing log is either an error (1)
-    # or a failed verification (2) depending on the chainlog implementation.
-    assert main(["verify", str(tmp_path / "nope.jsonl")]) != 0
+def test_verify_missing_log_is_tampered(tmp_path, capsys):
+    # Deleting the journal is tampering, so a missing log is a verdict (2),
+    # not an operational error. The Go verifier says the same.
+    assert main(["verify", str(tmp_path / "nope.jsonl")]) == 2
+    assert "TAMPERED at seq None" in capsys.readouterr().err
+
+
+def _assert_operational_error(capsys, code):
+    # Unreadable input is exit 1 with an error line: never OK, never TAMPERED,
+    # and never a traceback, because nothing was checked.
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert "error: cannot read" in err
+    assert "TAMPERED" not in err and "OK" not in out
+
+
+def test_verify_directory_is_an_operational_error(tmp_path, capsys):
+    (tmp_path / "chain.jsonl").mkdir()
+    _assert_operational_error(capsys, main(["verify", str(tmp_path / "chain.jsonl")]))
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs POSIX permissions and a non-root user")
+def test_verify_unreadable_journal_is_an_operational_error(tmp_path, capsys):
+    log = _build_chain(tmp_path / "chain.jsonl")
+    log.chmod(0)
+    try:
+        try:
+            log.open("rb").close()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this filesystem still allows reading a mode 000 file")
+        _assert_operational_error(capsys, main(["verify", str(log)]))
+    finally:
+        log.chmod(0o644)
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs POSIX permissions and a non-root user")
+def test_verify_journal_in_unsearchable_directory_counts_as_missing(tmp_path, capsys):
+    # SPEC: missing means what os.path.exists says, so this is TAMPERED, exit 2.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    log = _build_chain(locked / "chain.jsonl")
+    locked.chmod(0)
+    try:
+        assert main(["verify", str(log)]) == 2
+        assert "TAMPERED at seq None" in capsys.readouterr().err
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX symlinks")
+def test_checkpoints_file_that_cannot_be_opened_is_not_absent(tmp_path, capsys):
+    # A symlink loop exists as far as the directory is concerned but cannot be
+    # opened. It used to count as no checkpoints, so verify printed OK.
+    log = _build_chain(tmp_path / "chain.jsonl")
+    ckpt = tmp_path / "chain.jsonl.checkpoints.jsonl"
+    ckpt.symlink_to(ckpt)
+    _assert_operational_error(capsys, main(["verify", str(log)]))
+    assert main(["init", "--dir", str(tmp_path / "keys")]) == 0
+    capsys.readouterr()
+    code = main(["verify-checkpoint", str(log), "--key", str(tmp_path / "keys" / "aileron_ed25519.pub")])
+    err = capsys.readouterr().err
+    assert code == 1 and "error: cannot read" in err and "FAILED" not in err
+
+
+def test_verify_checkpoint_key_that_cannot_be_read_is_an_operational_error(tmp_path, capsys):
+    log = _build_chain(tmp_path / "chain.jsonl")
+    (tmp_path / "key.pub").mkdir()
+    code = main(["verify-checkpoint", str(log), "--key", str(tmp_path / "key.pub")])
+    out, err = capsys.readouterr()
+    assert code == 1 and "error: cannot read key" in err and "OK:" not in out
+
+
+def test_verify_unreadable_checkpoints_file_is_an_operational_error(tmp_path, capsys):
+    log = _build_chain(tmp_path / "chain.jsonl")
+    (tmp_path / "chain.jsonl.checkpoints.jsonl").mkdir()
+    _assert_operational_error(capsys, main(["verify", str(log)]))
+
+
+def test_verify_checkpoint_directory_journal_is_an_operational_error(tmp_path, capsys):
+    # A real signed checkpoint, then a directory where the journal was: the
+    # checkpoint is readable, the journal is not.
+    log = _build_chain(tmp_path / "chain.jsonl")
+    assert main(["init", "--dir", str(tmp_path / "keys")]) == 0
+    assert main(["sign-checkpoint", str(log), "--key", str(tmp_path / "keys" / "aileron_ed25519.key")]) == 0
+    log.rename(tmp_path / "moved.jsonl")
+    log.mkdir()
+    capsys.readouterr()
+    code = main(["verify-checkpoint", str(log), "--key", str(tmp_path / "keys" / "aileron_ed25519.pub")])
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert "error: cannot read" in err
+    assert "FAILED" not in err and "OK:" not in out
 
 
 # -------------------------------------------------------------------- init
@@ -86,6 +179,40 @@ def test_sign_and_verify_checkpoint(tmp_path):
     assert main(["verify-checkpoint", str(log), "--key", key]) == 0
     _tamper(log)
     assert main(["verify-checkpoint", str(log), "--key", key]) == 1
+
+
+def test_verify_checkpoint_journal_that_shrinks_between_reads_is_an_error(tmp_path, capsys, monkeypatch):
+    log = _build_chain(tmp_path / "chain.jsonl")
+    assert main(["init", "--dir", str(tmp_path / "keys")]) == 0
+    assert main(["sign-checkpoint", str(log), "--key", str(tmp_path / "keys" / "aileron_ed25519.key")]) == 0
+    capsys.readouterr()
+    # The second read finds nothing: rotated between the two reads. This used
+    # to index past the end and stop with an IndexError traceback.
+    import aileron.chainlog
+    monkeypatch.setattr(aileron.chainlog.ChainLog, "read", classmethod(lambda cls, path: []))
+    code = main(["verify-checkpoint", str(log), "--key", str(tmp_path / "keys" / "aileron_ed25519.pub")])
+    out, err = capsys.readouterr()
+    assert code == 1 and "changed while it was being verified (4 events, then 0)" in err
+    assert "OK:" not in out and "FAILED" not in err
+
+
+_RULES = str(Path(__file__).resolve().parents[1] / "src" / "aileron" / "rules" / "examples")
+
+
+@pytest.mark.parametrize("argv", [
+    ["report", "gone.jsonl", "-o", "out.html"],
+    ["export", "gone.jsonl", "-o", "out.json"],
+    ["detect", "gone.jsonl"],
+    ["rules", "test", _RULES, "gone.jsonl"],
+])
+def test_reading_a_missing_journal_does_not_recreate_it(tmp_path, capsys, monkeypatch, argv):
+    # main used to recreate the journal as an empty file, and report then gave
+    # it a VERIFIED badge with exit 0.
+    monkeypatch.chdir(tmp_path)
+    assert main(argv) == 1
+    assert "error:" in capsys.readouterr().err
+    assert not (tmp_path / "gone.jsonl").exists()
+    assert not (tmp_path / "out.html").exists()
 
 
 # ----------------------------------------------------------- report/export

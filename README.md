@@ -241,9 +241,11 @@ MCP client ──JSON-RPC──► proxy ───────┘        │    
 ```
 
 Tampering with any event breaks the hash link at the first modified
-sequence; `verify` reports `first_bad_seq` and exits non-zero. The journal
-is local-only and self-contained - verification needs no network and no
-trusted third party.
+sequence; `verify` reports `first_bad_seq` and exits 2, as it does for a
+missing journal. A journal or checkpoints file that exists but cannot be read
+is exit 1 with an error instead. Any non-zero exit means the journal cannot be
+trusted. The journal is local-only and self-contained - verification needs no
+network and no trusted third party.
 
 ### Independent verification
 
