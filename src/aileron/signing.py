@@ -68,23 +68,26 @@ def read_checkpoints(log_path: str) -> list[dict]:
 
     Reads ``<log_path>.checkpoints.jsonl``. Blank and unparseable lines are
     skipped; nothing here verifies a signature. Returns ``[]`` when the file
-    does not exist.
+    does not exist. Any other failure to open it raises: a checkpoints file
+    that cannot be read is not the same as no checkpoints, and treating it so
+    would let the cross-check be skipped by making the file unreadable.
     """
     ckpt_file = f"{log_path}.checkpoints.jsonl"
-    if not os.path.exists(ckpt_file):
-        return []
     out: list[dict] = []
-    with open(ckpt_file, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                out.append(obj)
+    try:
+        with open(ckpt_file, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    out.append(obj)
+    except FileNotFoundError:  # only open() can raise it here
+        return []
     return out
 
 
@@ -303,6 +306,12 @@ def verify_checkpoint(log_path: str, key_path: str) -> bool:
     if not result.ok:
         return False
     events = chainlog.ChainLog.read(log_path)
+    if len(events) < result.count:
+        # verify() and the read above each read the journal, and it shrank in
+        # between. Neither read speaks for it, so there is no verdict to give,
+        # and the first count must not index the second read's events.
+        raise ValueError(f"{log_path} changed while it was being verified "
+                         f"({result.count} events, then {len(events)})")
 
     # Every valid checkpoint must still hold, not just the widest one.
     for checkpoint in valid:
