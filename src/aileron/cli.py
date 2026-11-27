@@ -173,7 +173,15 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     """Verify hash-chain integrity; exit 2 on tamper."""
     from .chainlog import verify
 
-    result = verify(args.log)
+    # A journal that exists but cannot be read (a directory, no permission, an
+    # I/O error) is an operational error, exit 1, per SPEC.md. It is not OK and
+    # not TAMPERED: nothing was checked. A missing journal is different and
+    # stays TAMPERED, because deleting the evidence is tampering.
+    try:
+        result = verify(args.log)
+    except OSError as exc:
+        print(f"error: cannot read {args.log}: {exc}", file=sys.stderr)
+        return 1
     if not result.ok:
         for err in result.errors:
             print(f"error: {err}", file=sys.stderr)
@@ -184,7 +192,11 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     # perfectly valid shorter chain. If a checkpoint next to the log says more
     # events existed, that is evidence of tampering and must not be reported
     # as OK.
-    problems = _checkpoint_problems(args.log, args.skip_checkpoint_check)
+    try:
+        problems = _checkpoint_problems(args.log, args.skip_checkpoint_check)
+    except OSError as exc:
+        print(f"error: cannot read {args.log} or its checkpoints: {exc}", file=sys.stderr)
+        return 1
     if problems:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
@@ -234,8 +246,13 @@ def _cmd_verify_checkpoint(args: argparse.Namespace) -> int:
 
     from .signing import verify_checkpoint
 
-    key = _default_verify_key(args.log, args.key)
-    if not Path(key).exists():
+    try:
+        key = _default_verify_key(args.log, args.key)
+        key_found = Path(key).exists()
+    except OSError as exc:  # Path.exists raises on an unsearchable directory before 3.14
+        print(f"error: cannot read key: {exc}", file=sys.stderr)
+        return 1
+    if not key_found:
         print(f"error: no verification key found (looked for {key}). "
               f"Pass --key with the public key you trust.", file=sys.stderr)
         return 1
@@ -244,7 +261,11 @@ def _cmd_verify_checkpoint(args: argparse.Namespace) -> int:
     # re-sign - so say exactly which key was used, and warn when it came from
     # alongside the evidence rather than from the operator.
     resolved = Path(key).resolve()
-    fingerprint = hashlib.sha256(resolved.read_bytes()).hexdigest()[:16]
+    try:
+        fingerprint = hashlib.sha256(resolved.read_bytes()).hexdigest()[:16]
+    except OSError as exc:
+        print(f"error: cannot read key {resolved}: {exc}", file=sys.stderr)
+        return 1
     print(f"verifying against key {resolved} (sha256:{fingerprint})")
     if not args.key and resolved.parent == Path(args.log).resolve().parent:
         print("warning: this key sits next to the log it attests. An attacker "
@@ -252,7 +273,14 @@ def _cmd_verify_checkpoint(args: argparse.Namespace) -> int:
               "Pass --key with an out-of-band copy for a meaningful check.",
               file=sys.stderr)
 
-    if verify_checkpoint(args.log, key):
+    try:
+        valid = verify_checkpoint(args.log, key)
+    except OSError as exc:
+        # Same rule as verify: unreadable input is an operational error, never
+        # a verdict either way.
+        print(f"error: cannot read {args.log} or its checkpoints: {exc}", file=sys.stderr)
+        return 1
+    if valid:
         print(f"OK: checkpoint valid for {args.log}")
         return 0
     print(f"FAILED: checkpoint invalid for {args.log}", file=sys.stderr)
